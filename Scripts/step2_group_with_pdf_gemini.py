@@ -120,12 +120,15 @@ def main() -> None:
             include_thoughts=False,
         ),
     )
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=generate_cfg,
-    )
-    text = getattr(response, "text", "") or "[]"
+    def call_model(curr_model: str, cfg: "types.GenerateContentConfig") -> str:
+        resp = client.models.generate_content(
+            model=curr_model,
+            contents=contents,
+            config=cfg,
+        )
+        return getattr(resp, "text", "") or "[]"
+
+    text = call_model(model_name, generate_cfg)
 
     # Extract JSON array
     try:
@@ -150,7 +153,39 @@ def main() -> None:
         return False
 
     if not has_groups(data):
-        print("[warn] Model returned no groups; API call may have failed or lacked context. Writing raw result.")
+        # Retry once with alternate model/settings
+        try:
+            alt_model = "gemini-2.5-pro" if model_name == "gemini-2.5-flash" else "gemini-2.5-flash"
+            alt_cfg = types.GenerateContentConfig(
+                temperature=0.0,
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=1024,
+                    include_thoughts=False,
+                ),
+            )
+            print(f"[warn] No groups found; retrying with {alt_model}…")
+            text2 = call_model(alt_model, alt_cfg)
+            try:
+                data2 = json.loads(text2)
+                if not isinstance(data2, list):
+                    raise ValueError
+            except Exception:
+                s2 = text2.find("[")
+                e2 = text2.rfind("]")
+                if s2 != -1 and e2 != -1 and e2 > s2:
+                    data2 = json.loads(text2[s2 : e2 + 1])
+                else:
+                    data2 = []
+            if has_groups(data2):
+                data = data2
+            else:
+                print("[error] Grouping produced no groups after retry. Aborting.")
+                raise SystemExit(2)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"[error] Retry failed: {exc}")
+            raise SystemExit(2)
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=args.indent)
