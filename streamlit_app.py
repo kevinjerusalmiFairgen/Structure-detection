@@ -51,14 +51,22 @@ def main() -> None:
     c1, c2 = st.columns(2)
     with c1:
         sav_file = st.file_uploader("SPSS .sav", type=["sav"], accept_multiple_files=False)
+        meta_json_file = st.file_uploader("Existing metadata JSON (optional)", type=["json"], accept_multiple_files=False)
+        use_meta_json = st.checkbox("Use uploaded metadata JSON (skip SPSS step)", value=False, help="Skip step 1 to avoid SPSS parsing on Cloud")
     with c2:
         pdf_file = st.file_uploader("Questionnaire PDF", type=["pdf"], accept_multiple_files=False)
 
     st.divider()
 
     if run_button:
-        if not sav_file or not pdf_file:
-            st.error("Please upload both the .sav and the PDF.")
+        if not pdf_file:
+            st.error("Please upload the questionnaire PDF.")
+            return
+        if not use_meta_json and not sav_file:
+            st.error("Please upload the SPSS .sav or provide an existing metadata JSON.")
+            return
+        if use_meta_json and not meta_json_file:
+            st.error("Checked 'Use uploaded metadata JSON' but no JSON provided.")
             return
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -67,39 +75,54 @@ def main() -> None:
         outdir = os.path.join(outdir_base, ts)
         os.makedirs(outdir, exist_ok=True)
 
-        sav_path = os.path.join(workdir, sav_file.name)
+        sav_path = os.path.join(workdir, sav_file.name) if sav_file else None
         pdf_path = os.path.join(workdir, pdf_file.name)
-        with open(sav_path, "wb") as f:
-            f.write(sav_file.getbuffer())
+        if sav_file:
+            with open(sav_path, "wb") as f:
+                f.write(sav_file.getbuffer())
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.getbuffer())
+        meta_json_path = None
+        if meta_json_file:
+            meta_json_path = os.path.join(workdir, meta_json_file.name)
+            with open(meta_json_path, "wb") as f:
+                f.write(meta_json_file.getbuffer())
 
         st.info("Starting pipeline…")
         status = st.empty()
-        # Step 1: metadata
-        status.write("[step] 1/2 Extract metadata…")
-        step1_cmd = [
-            sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
-            "--input", sav_path,
-            "--output", os.path.join(outdir, "step1_metadata.json"),
-            "--indent", str(indent),
-            "--include-empty",
-        ]
-        rc1, logs1, t1 = run_step(step1_cmd)
-        if rc1 != 0:
-            st.error(f"Step 1 failed ({t1:.1f}s)")
-            with st.expander("Logs", expanded=True):
-                if not logs1.strip():
-                    st.write(f"Return code: {rc1}")
-                    st.code("(no output)")
-                    st.code("CMD: " + " ".join(step1_cmd))
-                else:
-                    st.code(logs1)
-            if show_tb and logs1.strip() == "":
-                st.exception(RuntimeError("Step 1 failed"))
-            shutil.rmtree(workdir, ignore_errors=True)
-            return
-        status.write(f"[time] 1/2 Extract metadata: {t1:.1f}s")
+        # Step 1: metadata (optional if meta JSON provided)
+        logs1 = ""
+        if use_meta_json and meta_json_path:
+            meta_out_path = os.path.join(outdir, "step1_metadata.json")
+            shutil.copyfile(meta_json_path, meta_out_path)
+            status.write("[step] 1/2 Extract metadata… (skipped, using uploaded JSON)")
+            t1 = 0.0
+            rc1 = 0
+            status.write(f"[time] 1/2 Extract metadata: {t1:.1f}s")
+        else:
+            status.write("[step] 1/2 Extract metadata…")
+            step1_cmd = [
+                sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
+                "--input", sav_path or "",
+                "--output", os.path.join(outdir, "step1_metadata.json"),
+                "--indent", str(indent),
+                "--include-empty",
+            ]
+            rc1, logs1, t1 = run_step(step1_cmd)
+            if rc1 != 0:
+                st.error(f"Step 1 failed ({t1:.1f}s)")
+                with st.expander("Logs", expanded=True):
+                    if not logs1.strip():
+                        st.write(f"Return code: {rc1}")
+                        st.code("(no output)")
+                        st.code("CMD: " + " ".join(step1_cmd))
+                    else:
+                        st.code(logs1)
+                if show_tb and logs1.strip() == "":
+                    st.exception(RuntimeError("Step 1 failed"))
+                shutil.rmtree(workdir, ignore_errors=True)
+                return
+            status.write(f"[time] 1/2 Extract metadata: {t1:.1f}s")
 
         # Step 2: group with PDF+metadata
         status.write("[step] 2/2 Group with PDF+metadata…")
