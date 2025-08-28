@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 import streamlit as st
+import sys
 
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -72,7 +73,7 @@ def main() -> None:
         # Step 1: metadata
         status.write("[step] 1/2 Extract metadata…")
         step1_cmd = [
-            "python", os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
+            sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
             "--input", sav_path,
             "--output", os.path.join(outdir, "step1_metadata.json"),
             "--indent", str(indent),
@@ -90,7 +91,7 @@ def main() -> None:
         # Step 2: group with PDF+metadata
         status.write("[step] 2/2 Group with PDF+metadata…")
         step2_cmd = [
-            "python", os.path.join(SCRIPTS_DIR, "step2_group_with_pdf_gemini.py"),
+            sys.executable, os.path.join(SCRIPTS_DIR, "step2_group_with_pdf_gemini.py"),
             "--pdf", pdf_path,
             "--metadata", os.path.join(outdir, "step1_metadata.json"),
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
