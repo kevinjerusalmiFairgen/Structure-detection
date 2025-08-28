@@ -57,10 +57,9 @@ def main() -> None:
     st.divider()
 
     if run_button:
-        try:
-            if not sav_file or not pdf_file:
-                st.error("Please upload both the .sav and the PDF.")
-                return
+        if not sav_file or not pdf_file:
+            st.error("Please upload both the .sav and the PDF.")
+            return
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         workdir = tempfile.mkdtemp(prefix=f"ui_run_{ts}_", dir=None)
@@ -110,9 +109,7 @@ def main() -> None:
             step2_cmd.append("--flash")
         effective_api_key = (secret_key or os.environ.get("GOOGLE_API_KEY", "")).strip()
         if effective_api_key:
-            # Set env var so child processes inherit the key automatically
             os.environ["GOOGLE_API_KEY"] = effective_api_key
-            # Also pass explicitly for clarity
             step2_cmd += ["--api-key", effective_api_key]
         else:
             st.error("Gemini API key is not configured. Set Streamlit secret 'google-gemini-key' or env 'GOOGLE_API_KEY'.")
@@ -130,7 +127,6 @@ def main() -> None:
         status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s")
 
         # Success: read outputs
-        meta_path = os.path.join(outdir, "step1_metadata.json")
         grouped_path = os.path.join(outdir, "step2_grouped_questions.json")
         if not os.path.exists(grouped_path):
             st.warning("Grouping output not found. See logs below.")
@@ -178,12 +174,6 @@ def main() -> None:
 
         # Clean up temp uploads
         shutil.rmtree(workdir, ignore_errors=True)
-        except Exception as e:
-            st.error("Unexpected error while running pipeline.")
-            if show_tb:
-                st.exception(e)
-            else:
-                st.code(str(e))
 
 
 if __name__ == "__main__":
