@@ -52,7 +52,7 @@ def main() -> None:
     with c1:
         sav_file = st.file_uploader("SPSS .sav", type=["sav"], accept_multiple_files=False)
     with c2:
-        pdf_file = st.file_uploader("Questionnaire PDF", type=["pdf"], accept_multiple_files=False)
+        pdf_file = st.file_uploader("Questionnaire (PDF or DOCX)", type=["pdf","docx"], accept_multiple_files=False)
 
     st.divider()
 
@@ -73,6 +73,30 @@ def main() -> None:
             f.write(sav_file.getbuffer())
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.getbuffer())
+        # If DOCX uploaded, convert to a temporary PDF by extracting text and writing to simple PDF
+        if pdf_path.lower().endswith(".docx"):
+            try:
+                from docx import Document
+                import fitz  # PyMuPDF
+                doc = Document(pdf_path)
+                text = []
+                for p in doc.paragraphs:
+                    if p.text:
+                        text.append(p.text)
+                text_content = "\n".join(text) or "(empty document)"
+                pdf_out = os.path.join(workdir, os.path.splitext(os.path.basename(pdf_path))[0] + ".pdf")
+                # Write a very basic PDF with the extracted text
+                pdf_doc = fitz.open()
+                page = pdf_doc.new_page()
+                rect = page.rect
+                page.insert_textbox(rect, text_content, fontsize=11, fontname="helv")
+                pdf_doc.save(pdf_out)
+                pdf_doc.close()
+                pdf_path = pdf_out
+            except Exception as e:
+                st.error(f"Failed to convert DOCX to PDF: {e}")
+                shutil.rmtree(workdir, ignore_errors=True)
+                return
 
         st.info("Starting pipeline…")
         status = st.empty()
