@@ -135,42 +135,58 @@ def main() -> None:
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
-        status.write("Completed. Showing results…")
-        st.success("Done")
-
-        # Quick metrics
-        try:
-            with open(grouped_path, "r", encoding="utf-8") as f:
-                grouped = json.load(f)
-        except Exception as e:
-            st.error("Failed to parse grouped JSON.")
-            if show_tb:
-                st.exception(e)
-            with st.expander("Logs", expanded=False):
-                st.code(logs1 + "\n" + logs2)
+        # Step 3: emit compact groups JSON (final output shape)
+        status.write("[step] Emit compact groups…")
+        groups_path = os.path.join(outdir, "step3_groups.json")
+        step3_cmd = [
+            sys.executable, os.path.join(SCRIPTS_DIR, "step3_emit_groups.py"),
+            "--input", grouped_path,
+            "--output", groups_path,
+            "--indent", str(indent),
+        ]
+        rc3, logs3, t3 = run_step(step3_cmd)
+        if rc3 != 0 or (not os.path.exists(groups_path)):
+            st.error(f"Groups emission failed ({t3:.1f}s)")
+            with st.expander("Logs", expanded=True):
+                st.code(logs1 + "\n" + logs2 + "\n" + logs3)
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
-        num_items = len(grouped) if isinstance(grouped, list) else 0
-        num_groups = sum(1 for x in grouped if isinstance(x, dict) and x.get("sub_questions"))
+        status.write("Completed. Showing results…")
+        st.success("Done")
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Items", f"{num_items}")
-        m2.metric("Groups", f"{num_groups}")
-        m3.metric("Flash", "Yes" if use_flash else "No")
+        # Load groups.json
+        try:
+            with open(groups_path, "r", encoding="utf-8") as f:
+                groups_obj = json.load(f)
+        except Exception as e:
+            st.error("Failed to parse groups JSON.")
+            if show_tb:
+                st.exception(e)
+            with st.expander("Logs", expanded=False):
+                st.code(logs1 + "\n" + logs2 + "\n" + logs3)
+            shutil.rmtree(workdir, ignore_errors=True)
+            return
 
-        st.subheader("Sample (first 15)")
-        st.json(grouped[:15], expanded=False)
+        groups_list = groups_obj.get("groups") if isinstance(groups_obj, dict) else []
+        num_groups = len(groups_list) if isinstance(groups_list, list) else 0
+
+        m1, m2 = st.columns(2)
+        m1.metric("Groups", f"{num_groups}")
+        m2.metric("Flash", "Yes" if use_flash else "No")
+
+        st.subheader("Groups (first 10)")
+        st.json(groups_list[:10], expanded=False)
 
         st.download_button(
-            label="Download grouped JSON",
-            data=json.dumps(grouped, ensure_ascii=False, indent=indent),
-            file_name="grouped_questions.json",
+            label="Download groups JSON",
+            data=json.dumps(groups_obj, ensure_ascii=False, indent=indent),
+            file_name="groups.json",
             mime="application/json",
         )
 
         with st.expander("Full logs"):
-            st.code(logs1 + "\n" + logs2)
+            st.code(logs1 + "\n" + logs2 + ("\n" + logs3 if logs3 else ""))
 
         # Clean up temp uploads
         shutil.rmtree(workdir, ignore_errors=True)
