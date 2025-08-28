@@ -140,6 +140,18 @@ def main() -> None:
         else:
             raise SystemExit("Model did not return a JSON array.")
 
+    # Warn if model returned no groups (or only standalones)
+    def has_groups(items: List[Dict[str, Any]]) -> bool:
+        for it in items:
+            if isinstance(it, dict):
+                subs = it.get("sub_questions")
+                if isinstance(subs, list) and len(subs) >= 2:
+                    return True
+        return False
+
+    if not has_groups(data):
+        print("[warn] Model returned no groups; API call may have failed or lacked context. Writing raw result.")
+
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=args.indent)
     print(f"[group] Written grouped questions to: {args.output}")
