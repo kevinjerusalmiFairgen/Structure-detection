@@ -48,7 +48,6 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="Path to write the combined grouped JSON")
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--api-key", dest="api_key")
-    parser.add_argument("--indent", type=int, default=2)
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
     parser.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash with higher thinking budget (4096)")
 
@@ -351,7 +350,7 @@ def main() -> None:
             raise SystemExit(2)
 
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=args.indent)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"[group] Written grouped questions to: {args.output}")
 
 

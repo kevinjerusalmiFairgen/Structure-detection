@@ -17,21 +17,21 @@ def run(cmd: str, quiet: bool = False) -> int:
     return subprocess.call(cmd, shell=True)
 
 
-def step1_extract_metadata(sav_path: str, output_json: str, include_empty: bool = False, indent: int = 2, *, quiet: bool = False) -> int:
+def step1_extract_metadata(sav_path: str, output_json: str, include_empty: bool = False, *, quiet: bool = False) -> int:
     script = os.path.join(ROOT, "Scripts", "step1_extract_spss_metadata.py")
     args = [
         sys.executable,
         shlex.quote(script),
         "--input", shlex.quote(sav_path),
         "--output", shlex.quote(output_json),
-        "--indent", str(indent),
+        # fixed indentation inside script
     ]
     if include_empty:
         args.append("--include-empty")
     return run(" ".join(args), quiet=quiet)
 
 
-def step2_extract_llm_pdf(pdf_path: str, metadata_path: str, output_json: str, indent: int = 2, api_key: str | None = None, *, quiet: bool = False, flash: bool = False) -> int:
+def step2_extract_llm_pdf(pdf_path: str, metadata_path: str, output_json: str, api_key: str | None = None, *, quiet: bool = False, flash: bool = False) -> int:
     script = os.path.join(ROOT, "Scripts", "step2_group_with_pdf_gemini.py")
     args = [
         sys.executable,
@@ -39,7 +39,6 @@ def step2_extract_llm_pdf(pdf_path: str, metadata_path: str, output_json: str, i
         "--pdf", shlex.quote(pdf_path),
         "--metadata", shlex.quote(metadata_path),
         "--output", shlex.quote(output_json),
-        "--indent", str(indent),
     ]
     if api_key:
         args += ["--api-key", shlex.quote(api_key)]
@@ -55,7 +54,7 @@ def main() -> int:
     p_all.add_argument("--sav", required=True)
     p_all.add_argument("--pdf", required=True)
     p_all.add_argument("--outdir", required=False, default=os.path.join(ROOT, "Output"))
-    p_all.add_argument("--indent", type=int, default=2)
+    # removed indent control; scripts use fixed indentation
     p_all.add_argument("--api-key")
     p_all.add_argument("--verbose", action="store_true")
     p_all.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash (thinking_budget 4096)")
@@ -72,7 +71,7 @@ def main() -> int:
         # Step 1
         print("[step] 1/2 Extract metadata…", flush=True)
         t0 = time.time()
-        rc = step1_extract_metadata(args.sav, meta_out, include_empty=True, indent=args.indent, quiet=True)
+        rc = step1_extract_metadata(args.sav, meta_out, include_empty=True, quiet=True)
         if rc != 0:
             return rc
         t_step1 = time.time()-t0
@@ -85,7 +84,6 @@ def main() -> int:
             args.pdf,
             meta_out,
             pdf_out,
-            indent=args.indent,
             api_key=args.api_key,
             quiet=True,
             flash=getattr(args, "flash", False),
@@ -100,7 +98,6 @@ def main() -> int:
                     os.path.join(ROOT, "Scripts", "step3_emit_groups.py"),
                     "--input", pdf_out,
                     "--output", groups_out,
-                    "--indent", str(args.indent),
                 ],
                 shell=False,
             )

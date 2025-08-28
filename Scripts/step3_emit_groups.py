@@ -76,7 +76,6 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Path to step2_grouped_questions.json")
     parser.add_argument("--output", required=True, help="Path to write groups JSON (with key 'groups')")
     parser.add_argument("--min-columns", type=int, default=2)
-    parser.add_argument("--indent", type=int, default=2)
     args = parser.parse_args()
 
     data = load_json(args.input)
@@ -85,7 +84,7 @@ def main() -> None:
     out = emit_groups_and_recodes(data, min_columns=args.min_columns)
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=args.indent)
+        json.dump(out, f, ensure_ascii=False, indent=2)
     print(f"[groups] Written: {args.output}")
 
 

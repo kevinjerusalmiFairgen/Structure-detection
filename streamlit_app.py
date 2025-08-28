@@ -38,7 +38,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Settings")
         use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=True)
-        indent = st.slider("JSON indent", min_value=0, max_value=4, value=2, step=1)
+        # Fixed JSON indentation in scripts; no user control
         show_tb = st.toggle("Show Python traceback on error", value=True)
         # Read Gemini key from Streamlit secrets or env; no manual entry in UI
         secret_key = ""
@@ -108,7 +108,6 @@ def main() -> None:
                 sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_xlsx_metadata.py"),
                 "--input", sav_path,
                 "--output", meta_out,
-                "--indent", str(indent),
                 "--include-empty",
             ]
         else:
@@ -116,7 +115,6 @@ def main() -> None:
                 sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
                 "--input", sav_path,
                 "--output", meta_out,
-                "--indent", str(indent),
                 "--include-empty",
             ]
         rc1, logs1, t1 = run_step(step1_cmd)
@@ -142,7 +140,6 @@ def main() -> None:
             "--pdf", pdf_path,
             "--metadata", meta_out,
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
-            "--indent", str(indent),
         ]
         if use_flash:
             step2_cmd.append("--flash")
@@ -187,7 +184,6 @@ def main() -> None:
             sys.executable, os.path.join(SCRIPTS_DIR, "step3_emit_groups.py"),
             "--input", grouped_path,
             "--output", groups_path,
-            "--indent", str(indent),
         ]
         rc3, logs3, t3 = run_step(step3_cmd)
         if rc3 != 0 or (not os.path.exists(groups_path)):
@@ -231,7 +227,7 @@ def main() -> None:
 
         st.download_button(
             label="Download groups JSON",
-            data=json.dumps(groups_obj, ensure_ascii=False, indent=indent),
+            data=json.dumps(groups_obj, ensure_ascii=False, indent=2),
             file_name="groups.json",
             mime="application/json",
         )

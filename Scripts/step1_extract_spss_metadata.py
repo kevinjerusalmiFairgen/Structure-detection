@@ -120,12 +120,7 @@ def main() -> None:
         "--output",
         help="Optional path to write the JSON output. If omitted, prints to stdout.",
     )
-    parser.add_argument(
-        "--indent",
-        type=int,
-        default=2,
-        help="JSON indentation (default: 2)",
-    )
+    # Fixed indentation; remove CLI control to simplify usage
     parser.add_argument(
         "--print",
         dest="print_json",
@@ -154,7 +149,7 @@ def main() -> None:
     else:
         print(f"[step1] Keeping all questions: {len(questions)}")
 
-    payload = json.dumps(questions, ensure_ascii=False, indent=args.indent)
+    payload = json.dumps(questions, ensure_ascii=False, indent=2)
 
     if args.output:
         print(f"[step1] Writing JSON to: {args.output}")
