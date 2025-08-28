@@ -33,6 +33,18 @@ def main() -> None:
         st.header("Settings")
         use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=False)
         indent = st.slider("JSON indent", min_value=0, max_value=4, value=2, step=1)
+        # Prefer Streamlit secret named 'google-gemini-key', allow override via input
+        secret_key = ""
+        try:
+            secret_key = st.secrets.get("google-gemini-key", "")  # type: ignore[attr-defined]
+        except Exception:
+            secret_key = os.environ.get("google-gemini-key", "") or os.environ.get("GOOGLE_API_KEY", "")
+        api_key = st.text_input(
+            "Gemini API Key",
+            value=("***" if secret_key else ""),
+            type="password",
+            help="Used for the grouping step (Gemini). Defaults to Streamlit secret 'google-gemini-key' if set.",
+        )
         outdir_label = st.text_input("Output folder", value=os.path.join(ROOT, "Output", "ui_runs"))
         run_button = st.button("Run Grouping", type="primary")
 
@@ -92,6 +104,12 @@ def main() -> None:
         ]
         if use_flash:
             step2_cmd.append("--flash")
+        effective_api_key = (api_key if api_key and api_key != "***" else secret_key).strip()
+        if effective_api_key:
+            # Set env var so child processes inherit the key automatically
+            os.environ["GOOGLE_API_KEY"] = effective_api_key
+            # Also pass explicitly for clarity
+            step2_cmd += ["--api-key", effective_api_key]
         rc2, logs2, t2 = run_step(step2_cmd)
         if rc2 != 0:
             st.error(f"Step 2 failed ({t2:.1f}s)")

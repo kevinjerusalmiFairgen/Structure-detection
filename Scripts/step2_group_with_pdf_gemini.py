@@ -14,7 +14,6 @@ except Exception as exc:
         "google-genai is required. Install with: pip install google-genai"
     ) from exc
 
-DEFAULT_GOOGLE_API_KEY = "***REMOVED***"
 
 def build_prompt() -> str:
     return (
@@ -48,7 +47,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get("GOOGLE_API_KEY") or DEFAULT_GOOGLE_API_KEY
+    api_key = args.api_key or os.environ.get("GOOGLE_API_KEY") or ""
     if not api_key:
         raise SystemExit("Set --api-key or GOOGLE_API_KEY.")
 
