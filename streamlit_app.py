@@ -32,7 +32,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Settings")
-        use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=False)
+        use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=True)
         indent = st.slider("JSON indent", min_value=0, max_value=4, value=2, step=1)
         # Read Gemini key from Streamlit secrets or env; no manual entry in UI
         secret_key = ""
