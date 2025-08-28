@@ -9,6 +9,7 @@ from datetime import datetime
 
 import streamlit as st
 import sys
+import traceback
 
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -18,10 +19,14 @@ SCRIPTS_DIR = os.path.join(ROOT, "Scripts")
 
 def run_step(cmd: list[str]) -> tuple[int, str, float]:
     start = time.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    elapsed = time.time() - start
-    logs = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode, logs, elapsed
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        elapsed = time.time() - start
+        logs = (proc.stdout or "") + (proc.stderr or "")
+        return proc.returncode, logs, elapsed
+    except Exception:
+        elapsed = time.time() - start
+        return 1, traceback.format_exc(), elapsed
 
 
 def main() -> None:
@@ -34,6 +39,7 @@ def main() -> None:
         st.header("Settings")
         use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=True)
         indent = st.slider("JSON indent", min_value=0, max_value=4, value=2, step=1)
+        show_tb = st.toggle("Show Python traceback on error", value=True)
         # Read Gemini key from Streamlit secrets or env; no manual entry in UI
         secret_key = ""
         try:
@@ -51,9 +57,10 @@ def main() -> None:
     st.divider()
 
     if run_button:
-        if not sav_file or not pdf_file:
-            st.error("Please upload both the .sav and the PDF.")
-            return
+        try:
+            if not sav_file or not pdf_file:
+                st.error("Please upload both the .sav and the PDF.")
+                return
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         workdir = tempfile.mkdtemp(prefix=f"ui_run_{ts}_", dir=None)
@@ -84,6 +91,8 @@ def main() -> None:
             st.error(f"Step 1 failed ({t1:.1f}s)")
             with st.expander("Logs", expanded=True):
                 st.code(logs1)
+            if show_tb and logs1.strip() == "":
+                st.exception(RuntimeError("Step 1 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
             return
         status.write(f"[time] 1/2 Extract metadata: {t1:.1f}s")
@@ -114,6 +123,8 @@ def main() -> None:
             st.error(f"Step 2 failed ({t2:.1f}s)")
             with st.expander("Logs", expanded=True):
                 st.code(logs1 + "\n" + logs2)
+            if show_tb and (logs2.strip() == ""):
+                st.exception(RuntimeError("Step 2 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
             return
         status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s")
@@ -135,10 +146,12 @@ def main() -> None:
         try:
             with open(grouped_path, "r", encoding="utf-8") as f:
                 grouped = json.load(f)
-        except Exception:
+        except Exception as e:
             st.error("Failed to parse grouped JSON.")
+            if show_tb:
+                st.exception(e)
             with st.expander("Logs", expanded=False):
-                st.code(logs)
+                st.code(logs1 + "\n" + logs2)
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
@@ -165,6 +178,12 @@ def main() -> None:
 
         # Clean up temp uploads
         shutil.rmtree(workdir, ignore_errors=True)
+        except Exception as e:
+            st.error("Unexpected error while running pipeline.")
+            if show_tb:
+                st.exception(e)
+            else:
+                st.code(str(e))
 
 
 if __name__ == "__main__":
