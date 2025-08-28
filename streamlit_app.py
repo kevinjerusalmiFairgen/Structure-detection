@@ -89,7 +89,12 @@ def main() -> None:
         if rc1 != 0:
             st.error(f"Step 1 failed ({t1:.1f}s)")
             with st.expander("Logs", expanded=True):
-                st.code(logs1)
+                if not logs1.strip():
+                    st.write(f"Return code: {rc1}")
+                    st.code("(no output)")
+                    st.code("CMD: " + " ".join(step1_cmd))
+                else:
+                    st.code(logs1)
             if show_tb and logs1.strip() == "":
                 st.exception(RuntimeError("Step 1 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
@@ -119,7 +124,13 @@ def main() -> None:
         if rc2 != 0:
             st.error(f"Step 2 failed ({t2:.1f}s)")
             with st.expander("Logs", expanded=True):
-                st.code(logs1 + "\n" + logs2)
+                combined = (logs1 or "") + "\n" + (logs2 or "")
+                if not combined.strip():
+                    st.write(f"Return code: {rc2}")
+                    st.code("(no output)")
+                    st.code("CMD: " + " ".join(step2_cmd))
+                else:
+                    st.code(combined)
             if show_tb and (logs2.strip() == ""):
                 st.exception(RuntimeError("Step 2 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
@@ -148,7 +159,13 @@ def main() -> None:
         if rc3 != 0 or (not os.path.exists(groups_path)):
             st.error(f"Groups emission failed ({t3:.1f}s)")
             with st.expander("Logs", expanded=True):
-                st.code(logs1 + "\n" + logs2 + "\n" + logs3)
+                combined3 = (logs1 or "") + "\n" + (logs2 or "") + "\n" + (logs3 or "")
+                if not combined3.strip():
+                    st.write(f"Return code: {rc3}")
+                    st.code("(no output)")
+                    st.code("CMD: " + " ".join(step3_cmd))
+                else:
+                    st.code(combined3)
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
