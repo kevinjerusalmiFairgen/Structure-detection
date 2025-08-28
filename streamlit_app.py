@@ -239,6 +239,47 @@ def main() -> None:
         with st.expander("Full logs"):
             st.code(logs1 + "\n" + logs2 + ("\n" + logs3 if logs3 else ""))
 
+        # Provide direct downloads for all three artifacts
+        st.subheader("Downloads")
+        try:
+            with open(meta_out, "r", encoding="utf-8") as f:
+                meta_content = f.read()
+        except Exception:
+            meta_content = ""
+        try:
+            with open(grouped_path, "r", encoding="utf-8") as f:
+                grouped_content = f.read()
+        except Exception:
+            grouped_content = ""
+        try:
+            with open(groups_path, "r", encoding="utf-8") as f:
+                final_groups_content = f.read()
+        except Exception:
+            final_groups_content = ""
+
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            st.download_button(
+                label="Download step1 metadata",
+                data=meta_content,
+                file_name="step1_metadata.json",
+                mime="application/json",
+            )
+        with d2:
+            st.download_button(
+                label="Download step2 grouped",
+                data=grouped_content,
+                file_name="step2_grouped_questions.json",
+                mime="application/json",
+            )
+        with d3:
+            st.download_button(
+                label="🔴 Download FINAL groups",
+                data=final_groups_content,
+                file_name="groups.json",
+                mime="application/json",
+            )
+
         # Clean up temp uploads
         shutil.rmtree(workdir, ignore_errors=True)
 

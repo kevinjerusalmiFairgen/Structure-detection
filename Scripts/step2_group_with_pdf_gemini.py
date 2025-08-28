@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 from typing import Any, Dict, List
 
@@ -43,6 +44,7 @@ def main() -> None:
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--api-key", dest="api_key")
     parser.add_argument("--indent", type=int, default=2)
+    parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
     parser.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash with higher thinking budget (4096)")
 
     args = parser.parse_args()
@@ -129,19 +131,50 @@ def main() -> None:
         return getattr(resp, "text", "") or "[]"
 
     text = call_model(model_name, generate_cfg)
+    if not isinstance(text, str) or not text.strip():
+        # Write raw empty output marker and exit
+        try:
+            with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
+                rf.write("(empty response)\n")
+        except Exception:
+            pass
+        print("[error] Model returned empty response.")
+        raise SystemExit(2)
 
-    # Extract JSON array
+    # Extract JSON array safely
+    def extract_json_array_str(s: str) -> str:
+        start = s.find("[")
+        if start == -1:
+            raise ValueError("no '[' found")
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        raise ValueError("no matching ']' found")
+
     try:
         data = json.loads(text)
         if not isinstance(data, list):
             raise ValueError("not a list")
     except Exception:
-        s = text.find("[")
-        e = text.rfind("]")
-        if s != -1 and e != -1 and e > s:
-            data = json.loads(text[s : e + 1])
-        else:
-            raise SystemExit("Model did not return a JSON array.")
+        try:
+            snippet = extract_json_array_str(text)
+            data = json.loads(snippet)
+            if not isinstance(data, list):
+                raise ValueError
+        except Exception as exc:
+            try:
+                with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
+                    rf.write(text)
+            except Exception:
+                pass
+            print(f"[error] Failed to parse JSON array from model response: {exc}")
+            raise SystemExit(2)
 
     # Warn if model returned no groups (or only standalones)
     def has_groups(items: List[Dict[str, Any]]) -> bool:
@@ -165,22 +198,77 @@ def main() -> None:
             )
             print(f"[warn] No groups found; retrying with {alt_model}…")
             text2 = call_model(alt_model, alt_cfg)
-            try:
-                data2 = json.loads(text2)
-                if not isinstance(data2, list):
-                    raise ValueError
-            except Exception:
-                s2 = text2.find("[")
-                e2 = text2.rfind("]")
-                if s2 != -1 and e2 != -1 and e2 > s2:
-                    data2 = json.loads(text2[s2 : e2 + 1])
-                else:
-                    data2 = []
+            if not isinstance(text2, str) or not text2.strip():
+                data2 = []
+            else:
+                try:
+                    data2 = json.loads(text2)
+                    if not isinstance(data2, list):
+                        raise ValueError
+                except Exception:
+                    try:
+                        snippet2 = extract_json_array_str(text2)
+                        data2 = json.loads(snippet2)
+                        if not isinstance(data2, list):
+                            data2 = []
+                    except Exception:
+                        # persist raw retry output
+                        try:
+                            with open(args.output + ".retry.raw.txt", "w", encoding="utf-8") as rf:
+                                rf.write(text2)
+                        except Exception:
+                            pass
+                        data2 = []
             if has_groups(data2):
                 data = data2
             else:
-                print("[error] Grouping produced no groups after retry. Aborting.")
-                raise SystemExit(2)
+                if getattr(args, "fallback", False):
+                    print("[warn] No groups after retry; using heuristic fallback grouping.")
+                    # Heuristic fallback grouping by base prefix
+                    def compute_base(code: str) -> str:
+                        if "_" in code:
+                            parts = code.split("_")
+                            if len(parts) > 1:
+                                return "_".join(parts[:-1])
+                        import re
+                        m = re.match(r"^(.*?)([A-Za-z]?\d{1,3})$", code)
+                        return m.group(1) if m else code
+                    base_to_members: Dict[str, List[Dict[str, Any]]] = {}
+                    for q in full_meta:
+                        c = str(q.get("question_code", ""))
+                        if not c:
+                            continue
+                        b = compute_base(c)
+                        base_to_members.setdefault(b, []).append(q)
+                    grouped_items: List[Dict[str, Any]] = []
+                    for base, members in base_to_members.items():
+                        if len(members) >= 2:
+                            grouped_items.append({
+                                "question_code": f"{base}_GROUP",
+                                "question_text": base,
+                                "question_type": "multi-select",
+                                "sub_questions": [
+                                    {"question_code": m.get("question_code"), "possible_answers": m.get("possible_answers", {})}
+                                    for m in members
+                                ],
+                            })
+                    member_codes = {m.get("question_code") for members in base_to_members.values() if len(members) >= 2 for m in members}
+                    for q in full_meta:
+                        c = q.get("question_code")
+                        if c in member_codes:
+                            continue
+                        pa = q.get("possible_answers")
+                        qtype = "integer" if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"} else "single-select"
+                        grouped_items.append({
+                            "question_code": c,
+                            "question_text": q.get("question_text"),
+                            "question_type": qtype,
+                            "possible_answers": pa,
+                        })
+                    data = grouped_items
+                else:
+                    print("[error] Grouping produced no groups after retry. Aborting.")
+                    raise SystemExit(2)
         except SystemExit:
             raise
         except Exception as exc:
