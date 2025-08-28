@@ -28,7 +28,11 @@ def build_prompt() -> str:
         "- Do NOT include range (min/max) variables inside groups. Keep them as standalone items.\n"
         "- Output MUST be JSON array. For grouped items, emit an object: {\"question_code\": group_code, \"question_text\": text, \"question_type\": \"multi-select\"|\"grid\", \"sub_questions\": [{\"question_code\": code, \"possible_answers\": {...}}]}.\n"
         "- For standalone variables, emit: {\"question_code\": code, \"question_text\": text, \"question_type\": \"integer\"|\"single-select\", \"possible_answers\": {...}}.\n"
-        "- Optional recode metadata: If and only if a variable (or group) is a recode/derived from other variable(s), add \"recode_from\": [source_codes...]. Otherwise omit this field entirely. Do not guess: include it only when clearly indicated by the questionnaire or metadata.\n"
+        "- Optional recode metadata: If and only if a variable (or group) is a true recode (a hidden/computed variable derived by a formula from other variables), add \"recode_from\": [source_codes...]. Otherwise omit this field entirely. Do not guess.\n"
+        "- IMPORTANT: Do NOT confound recodes with logics (skip/display dependencies).\n"
+        "  * Recodes: hidden/computed variables produced from existing data (e.g., age group derived from AGE).\n"
+        "  * Logics: routing/enablement dependencies (e.g., show Q10 only if Q5=\"Yes\"). Logics are NOT recodes and must NOT appear as recode_from.\n"
+        "  * Only populate recode_from for genuine derived/computed variables; do not include gating/skip conditions.\n"
         "- STRICT: All emitted question_code values must be a subset of the provided metadata codes. No invented codes.\n"
         "- Return ONLY the final JSON array; no markdown.\n"
     )
