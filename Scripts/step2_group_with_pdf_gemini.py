@@ -145,7 +145,7 @@ def main() -> None:
         print("[error] Model returned empty response.")
         raise SystemExit(2)
 
-    # Extract JSON array safely
+    # Extract JSON array safely (and helpers for robust recovery)
     def extract_json_array_str(s: str) -> str:
         start = s.find("[")
         if start == -1:
@@ -161,24 +161,94 @@ def main() -> None:
                     return s[start:i+1]
         raise ValueError("no matching ']' found")
 
+    def extract_code_fence(s: str) -> str:
+        tick = "```"
+        start = s.find(tick)
+        if start == -1:
+            return ""
+        # Skip optional language tag
+        lang_end = s.find("\n", start + len(tick))
+        if lang_end == -1:
+            return ""
+        end = s.find(tick, lang_end + 1)
+        if end == -1:
+            return ""
+        return s[lang_end + 1:end]
+
+    def extract_json_object_str(s: str) -> str:
+        start = s.find("{")
+        if start == -1:
+            raise ValueError("no '{' found")
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        raise ValueError("no matching '}' found")
+
+    def balance_brackets_fragment(fragment: str) -> str:
+        # Best-effort: count brackets/braces and append closing ones
+        open_sq = fragment.count('[')
+        close_sq = fragment.count(']')
+        open_br = fragment.count('{')
+        close_br = fragment.count('}')
+        balanced = fragment
+        # Close braces first, then brackets
+        balanced += '}' * max(0, open_br - close_br)
+        balanced += ']' * max(0, open_sq - balanced.count(']'))
+        return balanced
+
     try:
         data = json.loads(text)
         if not isinstance(data, list):
             raise ValueError("not a list")
     except Exception:
-        try:
-            snippet = extract_json_array_str(text)
-            data = json.loads(snippet)
-            if not isinstance(data, list):
-                raise ValueError
-        except Exception as exc:
+        # Try code-fenced content first
+        cf = extract_code_fence(text)
+        if cf:
             try:
-                with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
-                    rf.write(text)
+                data = json.loads(cf)
+                if isinstance(data, dict):
+                    data = [data]
+                if not isinstance(data, list):
+                    raise ValueError
             except Exception:
                 pass
-            print(f"[error] Failed to parse JSON array from model response: {exc}")
-            raise SystemExit(2)
+        if 'data' not in locals():
+            try:
+                snippet = extract_json_array_str(text)
+                data = json.loads(snippet)
+                if not isinstance(data, list):
+                    raise ValueError
+            except Exception:
+                # Try object top-level → wrap in list
+                try:
+                    obj = extract_json_object_str(text)
+                    obj_json = json.loads(obj)
+                    data = [obj_json]
+                except Exception:
+                    # Try balancing missing closers on array fragment
+                    try:
+                        start_idx = text.find('[')
+                        if start_idx != -1:
+                            frag = balance_brackets_fragment(text[start_idx:])
+                            data = json.loads(frag)
+                            if not isinstance(data, list):
+                                raise ValueError
+                        else:
+                            raise ValueError("no '[' found")
+                    except Exception as exc2:
+                        try:
+                            with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
+                                rf.write(text)
+                        except Exception:
+                            pass
+                        print(f"[error] Failed to parse JSON array from model response: {exc2}")
+                        raise SystemExit(2)
 
     # Warn if model returned no groups (or only standalones)
     def has_groups(items: List[Dict[str, Any]]) -> bool:
