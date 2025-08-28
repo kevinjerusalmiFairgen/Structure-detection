@@ -26,7 +26,8 @@ def emit_groups_and_recodes(grouped_items: List[Dict[str, Any]], *, min_columns:
             "id": hid,
             "name": target_code,
             "codes": sources,
-            "recode": f"{target_code}: {question_text}",
+            # recode should be only the variable name for downstream algo
+            "recode": target_code,
         })
 
     for item in grouped_items:
