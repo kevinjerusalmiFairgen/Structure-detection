@@ -50,7 +50,7 @@ def main() -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        sav_file = st.file_uploader("SPSS .sav", type=["sav"], accept_multiple_files=False)
+        sav_file = st.file_uploader("Data file (.sav or .xlsx)", type=["sav","xlsx"], accept_multiple_files=False)
     with c2:
         pdf_file = st.file_uploader("Questionnaire (PDF or DOCX)", type=["pdf","docx"], accept_multiple_files=False)
 
@@ -58,7 +58,7 @@ def main() -> None:
 
     if run_button:
         if not sav_file or not pdf_file:
-            st.error("Please upload both the .sav and the PDF.")
+            st.error("Please upload both the data file and the questionnaire.")
             return
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -100,15 +100,25 @@ def main() -> None:
 
         st.info("Starting pipeline…")
         status = st.empty()
-        # Step 1: metadata
+        # Step 1: metadata (.sav or .xlsx)
         status.write("[step] 1/2 Extract metadata…")
-        step1_cmd = [
-            sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
-            "--input", sav_path,
-            "--output", os.path.join(outdir, "step1_metadata.json"),
-            "--indent", str(indent),
-            "--include-empty",
-        ]
+        meta_out = os.path.join(outdir, "step1_metadata.json")
+        if sav_path.lower().endswith(".xlsx"):
+            step1_cmd = [
+                sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_xlsx_metadata.py"),
+                "--input", sav_path,
+                "--output", meta_out,
+                "--indent", str(indent),
+                "--include-empty",
+            ]
+        else:
+            step1_cmd = [
+                sys.executable, os.path.join(SCRIPTS_DIR, "step1_extract_spss_metadata.py"),
+                "--input", sav_path,
+                "--output", meta_out,
+                "--indent", str(indent),
+                "--include-empty",
+            ]
         rc1, logs1, t1 = run_step(step1_cmd)
         if rc1 != 0:
             st.error(f"Step 1 failed ({t1:.1f}s)")
@@ -130,7 +140,7 @@ def main() -> None:
         step2_cmd = [
             sys.executable, os.path.join(SCRIPTS_DIR, "step2_group_with_pdf_gemini.py"),
             "--pdf", pdf_path,
-            "--metadata", os.path.join(outdir, "step1_metadata.json"),
+            "--metadata", meta_out,
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
             "--indent", str(indent),
         ]
