@@ -24,6 +24,7 @@ def build_prompt() -> str:
         "- SOURCE OF TRUTH: SPSS metadata. Do NOT add variables or options not present in metadata.\n"
         "- Manipulate metadata only: preserve codes and possible_answers exactly as provided; reorder into groups.\n"
         "- Use the PDF ONLY to decide grouping (multi-select or grid) and recode relationships.\n"
+        "- Implicit groups are allowed: if the questionnaire structure strongly implies a group (shared stem, identical answer lists, consecutive codes, or layout), infer the group even if not explicitly labeled, but still use ONLY existing metadata variables.\n"
         "- Group types: multi-select or grid. A group must have >=2 members.\n"
         "- Do NOT include range (min/max) variables inside groups. Keep them as standalone items.\n"
         "- Output MUST be JSON array. For grouped items, emit an object: {\"question_code\": group_code, \"question_text\": text, \"question_type\": \"multi-select\"|\"grid\", \"sub_questions\": [{\"question_code\": code, \"possible_answers\": {...}}]}.\n"
