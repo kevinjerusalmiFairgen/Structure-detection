@@ -467,7 +467,216 @@ def main() -> None:
                         target = code or "(unknown)"
                         invalid_recode_vars[target] = bad_rec
 
+        # If any unknowns or invalid recodes exist, attempt ONE correction round via the model
+        if unknown_in_groups or unknown_standalone or invalid_recode_groups or invalid_recode_vars:
+            try:
+                print("[info] Attempting targeted correction for unknown/invalid items using ALLOWED_CODES…")
+                # Build minimal correction payload (only offending codes), and request a mapping
+                bad_group_members: List[Dict[str, Any]] = []
+                for g, codes in unknown_in_groups.items():
+                    bad_group_members.append({"group_code": g, "bad_codes": sorted(list(set(codes)))})
+                bad_recode_sources: List[str] = []
+                for codes in invalid_recode_groups.values():
+                    bad_recode_sources.extend(codes)
+                for codes in invalid_recode_vars.values():
+                    bad_recode_sources.extend(codes)
+                bad_recode_sources = sorted(list(set([str(x) for x in bad_recode_sources if str(x)])))
+                correction_request = {
+                    "bad_standalone_codes": sorted(list(set(unknown_standalone))),
+                    "bad_group_members": bad_group_members,
+                    "bad_recode_sources": bad_recode_sources,
+                }
+                correction_instructions = (
+                    "CORRECTION TASK: You are given ALLOWED_CODES (exact allowlist) and a list of offending codes.\n"
+                    "Goal: Produce a small JSON with how to fix ONLY these offending items.\n"
+                    "Output strict JSON object with keys: \n"
+                    "- code_replacements: array of {bad: string, good: string} where good ∈ ALLOWED_CODES.\n"
+                    "- drop_codes: array of strings for items to drop (no matching code).\n"
+                    "- source_replacements: array of {bad: string, good: string} to fix recode_from sources (good ∈ ALLOWED_CODES).\n"
+                    "Rules: Do not invent. Do not change formatting of ALLOWED_CODES. Only map to exact codes from ALLOWED_CODES or drop.\n"
+                )
+                allowed_codes_json2 = json.dumps(sorted(list(allowed_codes)), ensure_ascii=False)
+                request_json = json.dumps(correction_request, ensure_ascii=False)
+                correction_contents = [
+                    Content(
+                        role="user",
+                        parts=[
+                            Part.from_text(text=correction_instructions),
+                            Part.from_text(text="ALLOWED_CODES:\n" + allowed_codes_json2),
+                            Part.from_text(text="OFFENDING_ITEMS:\n" + request_json),
+                        ],
+                    )
+                ]
+                corrected_text = client.models.generate_content(
+                    model=model_name,
+                    contents=correction_contents,
+                    config=generate_cfg,
+                ).text or "{}"
+                # Parse mapping
+                try:
+                    mapping = json.loads(corrected_text)
+                except Exception:
+                    try:
+                        snippet = extract_json_object_str(corrected_text)
+                        mapping = json.loads(snippet)
+                    except Exception:
+                        mapping = {}
+                code_replacements = {}
+                drop_codes = set()
+                source_replacements = {}
+                if isinstance(mapping, dict):
+                    for entry in mapping.get("code_replacements", []) or []:
+                        bad = str(entry.get("bad", ""))
+                        good = str(entry.get("good", ""))
+                        if bad and good and good in allowed_codes:
+                            code_replacements[bad] = good
+                    for d in mapping.get("drop_codes", []) or []:
+                        if isinstance(d, str) and d:
+                            drop_codes.add(d)
+                    for entry in mapping.get("source_replacements", []) or []:
+                        bads = str(entry.get("bad", ""))
+                        goods = str(entry.get("good", ""))
+                        if bads and goods and goods in allowed_codes:
+                            source_replacements[bads] = goods
+                # Apply mapping to data (only touches offending codes)
+                def replace_code(code_value: str) -> str:
+                    if code_value in code_replacements:
+                        return code_replacements[code_value]
+                    return code_value
+                new_items: List[Dict[str, Any]] = []
+                for it in data:
+                    if not isinstance(it, dict):
+                        continue
+                    subs = it.get("sub_questions")
+                    if isinstance(subs, list):
+                        new_subs: List[Dict[str, Any]] = []
+                        for sq in subs:
+                            if not isinstance(sq, dict):
+                                continue
+                            sc = str(sq.get("question_code", ""))
+                            if sc in drop_codes:
+                                continue
+                            new_code = replace_code(sc)
+                            new_sq = dict(sq)
+                            new_sq["question_code"] = new_code
+                            # Fix sub-question recode sources
+                            rec2 = new_sq.get("recode_from")
+                            if isinstance(rec2, list):
+                                fixed = []
+                                for src in rec2:
+                                    s2 = str(src)
+                                    if s2 in drop_codes:
+                                        continue
+                                    s2n = source_replacements.get(s2, s2)
+                                    fixed.append(s2n)
+                                new_sq["recode_from"] = fixed
+                            new_subs.append(new_sq)
+                        new_it = dict(it)
+                        new_it["sub_questions"] = new_subs
+                        # Fix group-level recode sources
+                        rec = new_it.get("recode_from")
+                        if isinstance(rec, list):
+                            fixedg = []
+                            for src in rec:
+                                s = str(src)
+                                if s in drop_codes:
+                                    continue
+                                sn = source_replacements.get(s, s)
+                                fixedg.append(sn)
+                            new_it["recode_from"] = fixedg
+                        new_items.append(new_it)
+                    else:
+                        codev = str(it.get("question_code", ""))
+                        if codev in drop_codes:
+                            continue
+                        new_codev = replace_code(codev)
+                        new_it = dict(it)
+                        new_it["question_code"] = new_codev
+                        # Fix standalone recode sources
+                        rec = new_it.get("recode_from")
+                        if isinstance(rec, list):
+                            fixeds = []
+                            for src in rec:
+                                s = str(src)
+                                if s in drop_codes:
+                                    continue
+                                sn = source_replacements.get(s, s)
+                                fixeds.append(sn)
+                            new_it["recode_from"] = fixeds
+                        new_items.append(new_it)
+                data = new_items
+                print("[info] Targeted correction completed.")
+            except Exception as _exc:
+                print(f"[warn] Correction round failed: {_exc}")
+
+        # Recompute unknowns after correction (or no-op)
+        unknown_in_groups = {}
+        unknown_standalone = []
+        invalid_recode_groups = {}
+        invalid_recode_vars = {}
+        for it in data:
+            if not isinstance(it, dict):
+                continue
+            subs = it.get("sub_questions")
+            if isinstance(subs, list):
+                grp_code = str(it.get("question_code", "GROUP"))
+                bad: List[str] = []
+                for sq in subs:
+                    if not isinstance(sq, dict):
+                        continue
+                    scode = str(sq.get("question_code", ""))
+                    if scode and scode not in allowed_codes:
+                        bad.append(scode)
+                if bad:
+                    unknown_in_groups[grp_code] = bad
+                # Validate group-level recodes
+                rec = it.get("recode_from")
+                if isinstance(rec, list):
+                    bad_rec: List[str] = []
+                    for src in rec:
+                        s = str(src)
+                        if not s or (s not in allowed_codes) or (s in group_header_codes):
+                            bad_rec.append(s)
+                    if bad_rec:
+                        invalid_recode_groups[grp_code] = bad_rec
+                # Validate sub-question recodes
+                for sq in subs:
+                    if not isinstance(sq, dict):
+                        continue
+                    rec2 = sq.get("recode_from")
+                    if isinstance(rec2, list):
+                        bad_rec2: List[str] = []
+                        for src in rec2:
+                            s2 = str(src)
+                            if not s2 or (s2 not in allowed_codes) or (s2 in group_header_codes):
+                                bad_rec2.append(s2)
+                        if bad_rec2:
+                            target = str(sq.get("question_code", "")) or "(unknown)"
+                            invalid_recode_vars[target] = bad_rec2
+            else:
+                code = str(it.get("question_code", ""))
+                if code and code not in allowed_codes:
+                    unknown_standalone.append(code)
+                rec = it.get("recode_from")
+                if isinstance(rec, list):
+                    bad_rec: List[str] = []
+                    for src in rec:
+                        s = str(src)
+                        if not s or (s not in allowed_codes) or (s in group_header_codes):
+                            bad_rec.append(s)
+                    if bad_rec:
+                        target = code or "(unknown)"
+                        invalid_recode_vars[target] = bad_rec
+
         if unknown_in_groups or invalid_recode_groups or invalid_recode_vars:
+            for g, codes in unknown_in_groups.items():
+                print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
+            for g, codes in invalid_recode_groups.items():
+                print(f"[error] Invalid recode_from for group header '{g}': {codes}")
+            for v, codes in invalid_recode_vars.items():
+                print(f"[error] Invalid recode_from for variable '{v}': {codes}")
+            print("[fail] Output contains invalid variables or recode sources in groups. Fix the prompt/grouping and retry.")
+            raise SystemExit(3)
             for g, codes in unknown_in_groups.items():
                 print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
             for g, codes in invalid_recode_groups.items():
