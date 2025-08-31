@@ -466,20 +466,22 @@ def main() -> None:
                         target = code or "(unknown)"
                         invalid_recode_vars[target] = bad_rec
 
-        if unknown_in_groups or unknown_standalone or invalid_recode_groups or invalid_recode_vars:
+        if unknown_in_groups or invalid_recode_groups or invalid_recode_vars:
             for g, codes in unknown_in_groups.items():
                 print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
-            if unknown_standalone:
-                print(f"[error] Non-metadata standalone items: {unknown_standalone}")
             for g, codes in invalid_recode_groups.items():
                 print(f"[error] Invalid recode_from for group header '{g}': {codes}")
             for v, codes in invalid_recode_vars.items():
                 print(f"[error] Invalid recode_from for variable '{v}': {codes}")
-            print("[fail] Output contains invalid variables or recode sources. Fix the prompt/grouping and retry.")
+            print("[fail] Output contains invalid variables or recode sources in groups. Fix the prompt/grouping and retry.")
             raise SystemExit(3)
+        # Unknown standalone items are dropped with a warning instead of failing
+        if unknown_standalone:
+            print(f"[warn] Dropping standalone items not in metadata: {sorted(set(unknown_standalone))}")
 
         # If validation passed, filter out standalone non-recode items (warn, do not fail)
         non_recode_standalone: List[str] = []
+        non_metadata_standalone: List[str] = []
         filtered_data: List[Dict[str, Any]] = []
         for it in data:
             if not isinstance(it, dict):
@@ -490,6 +492,10 @@ def main() -> None:
             else:
                 code = str(it.get("question_code", ""))
                 rec = it.get("recode_from")
+                # Drop standalone items not in metadata entirely
+                if code and code not in allowed_codes:
+                    non_metadata_standalone.append(code)
+                    continue
                 if isinstance(rec, list) and len(rec) > 0:
                     filtered_data.append(it)
                 else:
@@ -498,6 +504,8 @@ def main() -> None:
 
         if non_recode_standalone:
             print(f"[warn] Dropping standalone non-recode items: {sorted(set(non_recode_standalone))}")
+        if non_metadata_standalone:
+            print(f"[warn] Dropped standalone non-metadata items: {sorted(set(non_metadata_standalone))}")
 
         json.dump(filtered_data, f, ensure_ascii=False, indent=2)
     print(f"[group] Written grouped questions to: {args.output}")
