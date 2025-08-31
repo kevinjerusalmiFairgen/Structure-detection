@@ -47,7 +47,7 @@ def build_prompt() -> str:
         "- Never treat routing/skip/display logic as recodes.  \n"
         "- Do not force recodes to look like their inputs; preserve their actual form from metadata.\n\n"
         "GROUPING RULES\n"
-        "- Prefer agreement between metadata stems and PDF context. If one source is clearly unambiguous (strong repeated stem in metadata, or obvious grid/lead‑in in the PDF), you may form the group using that source alone; use the other source to confirm when available.\n"
+        "- Use any of: metadata stems, metadata question_text, and/or the PDF questionnaire. If one source makes the relationship obvious, you may rely on that source alone; otherwise combine cues.\n"
         "- Group variables that repeat the same question across columns under a shared stem.\n"
         "- Accept a stem when at least two signals agree, or when a single source is clearly unambiguous:\n"
         "  • Common lead-in wording in PDF.  \n"
