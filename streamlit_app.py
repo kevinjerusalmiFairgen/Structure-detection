@@ -200,9 +200,12 @@ def main() -> None:
             import re as _re
             m_used = _re.search(r"\[info\] Using model:\s*([^\r\n]+)", logs2 or "")
             model_used = (m_used.group(1).strip() if m_used else ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro"))
+            m_tokens = _re.search(r"\[info\] Estimated tokens:\s*(\d+)", logs2 or "")
+            tokens_str = f", tokens: {m_tokens.group(1)}" if (model_used.startswith("gemini-2.5-pro") and m_tokens) else ""
         except Exception:
             model_used = ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro")
-        status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s (model: {model_used})")
+            tokens_str = ""
+        status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s (model: {model_used}{tokens_str})")
 
         # Surface warnings for dropped standalones
         if "[warn] Dropping standalone non-recode items:" in (logs2 or "") or "[warn] Dropped standalone non-metadata items:" in (logs2 or ""):
@@ -277,11 +280,17 @@ def main() -> None:
 
         groups_list = groups_obj.get("groups") if isinstance(groups_obj, dict) else []
         num_groups = len(groups_list) if isinstance(groups_list, list) else 0
+        num_recodes = len(groups_obj.get("recodings", [])) if isinstance(groups_obj, dict) else 0
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Groups", f"{num_groups}")
-        m2.metric("Model", model_used)
-        m3.metric("Total time", f"{total_elapsed:.1f}s")
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Groups", f"{num_groups}")
+        with m2:
+            st.metric("Recodes", f"{num_recodes}")
+        with m3:
+            st.metric("Model", model_used + (f" (≈{m_tokens.group(1)} tokens)" if ('m_tokens' in locals() and m_tokens and model_used.startswith('gemini-2.5-pro')) else ""))
+        with m4:
+            st.metric("Total time", f"{total_elapsed:.1f}s")
 
         st.subheader("Groups (first 10)")
         st.json(groups_list[:10], expanded=False)

@@ -22,63 +22,68 @@ except Exception as exc:
 def build_prompt() -> str:
     return (
         "INPUTS\n"
-        "- PDF questionnaire (vision)\n"
-        "- SPSS metadata COMPACT JSON + ALLOWED_CODES (exact allowlist)\n\n"
+        "- PDF questionnaire (source for stems, layout, grouping cues)\n"
+        "- SPSS metadata (COMPACT JSON) + ALLOWED_CODES (exact allowlist)\n\n"
         "OBJECTIVE\n"
-        "- Find group columns that are part of the same question (multi-select) and find true derived variables (recodes). Treat any grid as multi-select. Do NOT emit standalone non-recode variables. When a variable is truly computed, annotate it with recode_from listing exact ALLOWED_CODES sources (never routing/skip logic).\n\n"
+        "- Detect and group repeated-question variables (multi-select, grids).\n"
+        "- Identify genuine recoded variables (indices/totals/bands).\n"
+        "- Output ONLY:\n"
+        "  • Multi-select groups (including grids).\n"
+        "  • True recodes.\n"
+        "- Do NOT output plain standalone variables.\n\n"
         "HARD CONSTRAINTS\n"
-        "- SOURCE OF TRUTH: metadata. Preserve codes and possible_answers exactly; do not add/invent/rename/reformat (case/underscores/hyphens/leading zeros).\n"
-        "- question_code values must be EXACT matches from ALLOWED_CODES (allowlist). If unsure, omit.\n"
-        "- Do NOT change code formatting: do not alter case, add/remove underscores or hyphens, change digits, reorder parts, or normalize/slugify in any way. Use letter-for-letter exact codes only.\n"
-        "- Do NOT invent or rewrite question_text: for variables use metadata question_text verbatim; for group headers use the stem/base (from metadata or questionnaire stem).\n"
-        "- Group headers are labels, not variables: use '<STEM>_GROUP' (or '<STEM>_GRID'); never use a real code as header.\n"
-        "- Do NOT include range (min/max) variables inside groups.\n"
-        "- Use the PDF ONLY to decide grouping and true recodes.\n\n"
+        "- SOURCE OF TRUTH: metadata. Never invent or normalize.\n"
+        "- question_code values: must be EXACT matches from ALLOWED_CODES (letter-for-letter).\n"
+        "- Preserve codes and possible_answers exactly as in metadata. Do not add, rename, reformat, reorder, slugify, or alter case/hyphens/underscores/digits.\n"
+        "- Use metadata question_text verbatim.  \n"
+        "  • For group headers: use the stem/base from metadata or questionnaire, suffixed with `_GROUP` (or `_GRID`).  \n"
+        "  • Never use a real variable code as a header.  \n"
+        "- Do not include range/min/max variables in groups.\n"
+        "- PDF is used only to confirm stems, grouping, and genuine recodes.\n\n"
         "DERIVED VARIABLES (RECODES)\n"
-        "- Only for genuine computed variables (indices/totals/bands).\n"
-        "- recode_from must be exact sources from ALLOWED_CODES; never group headers.\n"
-        "- Do NOT include routing/skip/display logic as recodes.\n\n"
-        "GROUPING GUIDANCE\n"
-        "- PRIMARY RULE: Group variables that are the same question repeated across columns. Confirm with the questionnaire: shared stem/wording (common lead-in).\n"
-        "- Stem discovery: Find stems from the PDF and confirm with metadata. Accept a stem when at least two cues agree (same lead-in, same answers, clear grid/layout, patterned codes, or close placement in the PDF); then include all matching metadata variables with compatible answers and exclude ranges.\n"
-        "- Implicit multi-select groups are allowed if variables share grouping signals. Use ALL applicable signals:\n"
-        "  • Shared stem/base prefix (e.g., Q1_1, Q1_2, Q1_97).\n"
-        "  • Identical or highly similar answer lists (not only pa_type size, but labels if available).\n"
-        "  • Consecutive or patterned codes (e.g., Q5_1..Q5_10).\n"
-        "  • Clear grid/layout cues from the PDF (columns/rows under a common stem).\n"
-        "  • Also ensure compatibility by pa_type from the compact metadata.\n"
-        "- Groups may not always be explicitly labeled in the questionnaire — if the structure (stem, identical answers, consecutive numbering, or layout) clearly implies a group, include it.\n\n"
-        "- Do NOT group by section headings. Sections may contain several independent repeated-question groups; only group variables that share the same question/stem and answer sets, consistent with the questionnaire’s intent.\n\n"
-        "- Aim for completeness: include all matching members from metadata; groups must have ≥2 members.\n"
-        "- EXCLUSIVE/NO-ANSWER variants: include only if the exact code exists in ALLOWED_CODES. Accepted forms include numeric suffixes (Q1_97/Q1_98/Q1_99), token forms (Q2_noanswer/Q2_dontknow/Q2_dk/Q2_na/Q2_refused), and token-first variants (noanswer_Q2) if present.\n\n"
-        "OUTPUT SCHEMA (JSON array only, no markdown)\n"
-        "- Grouped (multi-select only, grids included as multi-select): {\"question_code\": \"<STEM>_GROUP\", \"question_text\": text, \"question_type\": \"multi-select\", \"sub_questions\": [{\"question_code\": code, \"possible_answers\": {...}}]}\n"
-        "- Standalone RECODE ONLY: {\"question_code\": code, \"question_text\": text, \"question_type\": \"single-select\"|\"integer\", \"possible_answers\": {...}, \"recode_from\": [source_codes...]}\n\n"
-        "EXAMPLE (format only; use only ALLOWED_CODES in your answer)\n"
+        "- Recodes can have a different structure than their sources (different question_type, different possible_answers, or different coding).\n"
+        "- Include only true computed variables (indices/totals/bands).  \n"
+        "- recode_from: must list exact variable codes from ALLOWED_CODES (not group headers).  \n"
+        "- Never treat routing/skip/display logic as recodes.  \n"
+        "- Do not force recodes to look like their inputs; preserve their actual form from metadata.\n\n"
+        "GROUPING RULES\n"
+        "- Group variables that repeat the same question across columns under a shared stem.\n"
+        "- Accept a stem only if at least two signals agree:\n"
+        "  • Common lead-in wording in PDF.  \n"
+        "  • Identical/highly similar possible_answers.  \n"
+        "  • Patterned codes (Q1_1..Q1_10, etc.).  \n"
+        "  • Grid/column layout in PDF.  \n"
+        "  • Shared pa_type in metadata.  \n"
+        "- Groups must have ≥2 members and be complete (include all matching members from metadata).\n"
+        "- Do NOT group by section headings alone—only by true repeated-question stems.\n"
+        "- Include explicit “exclusive/no-answer” codes (e.g., Q1_97, Q2_dk) **only if present in ALLOWED_CODES**.\n\n"
+        "OUTPUT SCHEMA (JSON array only)\n"
         "[\n"
         "  {\n"
-        "    \"question_code\": \"Q1_GROUP\",\n"
-        "    \"question_text\": \"Q1\",\n"
+        "    \"question_code\": \"<STEM>_GROUP\",\n"
+        "    \"question_text\": \"<stem text>\",\n"
         "    \"question_type\": \"multi-select\",\n"
         "    \"sub_questions\": [\n"
-        "      {\"question_code\": \"Q1_1\", \"possible_answers\": {\"1\": \"Yes\", \"0\": \"No\"}},\n"
-        "      {\"question_code\": \"Q1_97\", \"possible_answers\": {\"1\": \"Selected\", \"0\": \"Not selected\"}}\n"
+        "      {\"question_code\": \"<code>\", \"possible_answers\": {...}},\n"
+        "      {\"question_code\": \"<code>\", \"possible_answers\": {...}}\n"
         "    ]\n"
         "  },\n"
         "  {\n"
-        "    \"question_code\": \"AGE_BAND\",\n"
-        "    \"question_text\": \"Age band\",\n"
-        "    \"question_type\": \"single-select\",\n"
-        "    \"possible_answers\": {\"1\": \"18-24\", \"2\": \"25-34\"},\n"
-        "    \"recode_from\": [\"AGE\"]\n"
+        "    \"question_code\": \"<derived_code>\",\n"
+        "    \"question_text\": \"<metadata question_text>\",\n"
+        "    \"question_type\": \"single-select\" | \"integer\" | \"other as in metadata\",\n"
+        "    \"possible_answers\": {...},\n"
+        "    \"recode_from\": [\"<source_code1>\", \"<source_code2>\"]\n"
         "  }\n"
         "]\n\n"
-        "CHECK BEFORE RESPONDING\n"
-        "- Every question_code ∈ ALLOWED_CODES (except group headers).\n"
-        "- Only emit multi-select groups (treat grids as multi-select); each group has ≥2 members; no ranges in groups.\n"
-        "- Do NOT emit standalone items unless they are true recodes (must include recode_from).\n"
-        "- Exclusive variants included only if present in ALLOWED_CODES.\n"
-        "- recode_from sources ∈ ALLOWED_CODES and are not group headers.\n"
+        "CHECKLIST (before emitting output)\n"
+        "- ✅ Every question_code ∈ ALLOWED_CODES (except group headers).\n"
+        "- ✅ Only multi-select groups and true recodes are included.\n"
+        "- ✅ No standalone one-offs (unless recode with recode_from).\n"
+        "- ✅ No ranges/min/max inside groups.\n"
+        "- ✅ Exclusive/no-answer codes only if in ALLOWED_CODES.\n"
+        "- ✅ recode_from sources are real codes from ALLOWED_CODES (not group headers).\n"
+        "- ✅ Recodes may have different structure from sources — preserve metadata form.\n"
     )
 
 
@@ -115,18 +120,39 @@ def main() -> None:
     with open(args.metadata, "r", encoding="utf-8") as f:
         full_meta: List[Dict[str, Any]] = json.load(f)
 
+    # Build compact metadata payload: code + short text + small labels signal
+    def _shorten_text(t: Any, max_len: int = 160) -> str:
+        s = str(t) if t is not None else ""
+        if len(s) > max_len:
+            return s[:max_len - 1] + "…"
+        return s
+
+    def _labels_signal(pa: Any) -> Dict[str, Any]:
+        # Return {labels_size, labels_sample} for label maps; {range: true} for min/max; {free_text: true} when no labels
+        if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"}:
+            return {"range": True}
+        if isinstance(pa, dict) and len(pa) > 0:
+            # Use first up to 5 label values
+            sample_vals: List[str] = []
+            try:
+                for i, (k, v) in enumerate(pa.items()):
+                    if i >= 5:
+                        break
+                    sample_vals.append(str(v) if v is not None else "")
+            except Exception:
+                pass
+            return {"labels_size": len(pa), "labels_sample": sample_vals}
+        return {"free_text": True}
+
     compact_items: List[Dict[str, Any]] = []
     for q in full_meta:
         code = q.get("question_code")
-        text = q.get("question_text")
+        text = _shorten_text(q.get("question_text"))
         pa = q.get("possible_answers")
-        if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"}:
-            pa_type = "range"
-        elif isinstance(pa, dict):
-            pa_type = f"labels:{len(pa)}"
-        else:
-            pa_type = "labels:0"
-        compact_items.append({"question_code": code, "question_text": text, "pa_type": pa_type})
+        sig = _labels_signal(pa)
+        item: Dict[str, Any] = {"question_code": code, "question_text": text}
+        item.update(sig)
+        compact_items.append(item)
     compact_json = json.dumps(compact_items, ensure_ascii=False)
 
     # Auto-switch to Pro if metadata is large (for better context handling)
@@ -177,10 +203,6 @@ def main() -> None:
 
     # Prepare request
     prompt = build_prompt()
-    # Also pass explicit ALLOWED_CODES for exact matching
-    allowed_codes = [str(q.get("question_code")) for q in full_meta if q.get("question_code")]
-    allowed_codes_json = json.dumps(sorted(allowed_codes), ensure_ascii=False)
-
     contents = [
         Content(
             role="user",
@@ -188,10 +210,17 @@ def main() -> None:
                 Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
                 Part.from_text(text=prompt),
                 Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
-                Part.from_text(text="ALLOWED_CODES (exact match allowlist):\n" + allowed_codes_json),
             ],
         )
     ]
+
+    # Rough input token estimate (excludes PDF tokens). 1 token ≈ 4 bytes heuristic.
+    try:
+        total_bytes = len(prompt.encode("utf-8")) + len(compact_json.encode("utf-8"))
+        approx_tokens = max(1, total_bytes // 4)
+        print(f"[info] Estimated tokens: {approx_tokens}")
+    except Exception:
+        pass
 
     generate_cfg = types.GenerateContentConfig(
         temperature=temperature,
