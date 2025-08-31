@@ -159,19 +159,49 @@ def main() -> None:
                     pdf_path = converted_pdf
                     print(f"[info] DOCX converted via docx2pdf: {pdf_path}")
                 except Exception:
-                    # Last resort: text-only
+                    # Last resort: text-only with pagination and basic table text
                     from docx import Document  # type: ignore
                     import fitz  # type: ignore
                     doc = Document(pdf_path)
-                    text_parts = [p.text for p in doc.paragraphs if p.text]
-                    text_content = "\n".join(text_parts) or "(empty document)"
+                    lines = []
+                    for p in doc.paragraphs:
+                        t = p.text.strip()
+                        if t:
+                            lines.append(t)
+                    # Extract simple table text
+                    for tbl in getattr(doc, 'tables', []) or []:
+                        lines.append("[TABLE]")
+                        for row in tbl.rows:
+                            cells = [c.text.strip() for c in row.cells]
+                            if any(cells):
+                                lines.append(" | ".join(cells))
+                    if not lines:
+                        lines = ["(empty document)"]
                     pdf_doc = fitz.open()
-                    page = pdf_doc.new_page()
-                    page.insert_textbox(page.rect, text_content, fontsize=11, fontname="helv")
+                    margin = 36
+                    line_height = 13
+                    max_lines = 60
+                    chunk = []
+                    for i, ln in enumerate(lines, 1):
+                        chunk.append(ln)
+                        if len(chunk) >= max_lines:
+                            page = pdf_doc.new_page()
+                            y = margin
+                            for cl in chunk:
+                                page.insert_text((margin, y), cl, fontsize=10, fontname="helv")
+                                y += line_height
+                            chunk = []
+                    if chunk:
+                        page = pdf_doc.new_page()
+                        y = margin
+                        for cl in chunk:
+                            page.insert_text((margin, y), cl, fontsize=10, fontname="helv")
+                            y += line_height
                     pdf_doc.save(converted_pdf)
                     pdf_doc.close()
                     pdf_path = converted_pdf
-                    print(f"[info] DOCX converted to simple text PDF: {pdf_path}")
+                    size_kb = os.path.getsize(pdf_path) / 1024.0 if os.path.exists(pdf_path) else 0.0
+                    print(f"[info] DOCX converted to simple text PDF: {pdf_path} ({size_kb:.1f} KB)")
         except Exception as exc:
             print(f"[error] Failed to convert DOCX to PDF: {exc}")
             raise SystemExit(2)
