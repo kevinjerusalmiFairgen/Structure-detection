@@ -27,6 +27,7 @@ def build_prompt() -> str:
         "HARD CONSTRAINTS\n"
         "- SOURCE OF TRUTH: metadata. Preserve codes and possible_answers exactly; do not add/invent/rename/reformat (case/underscores/hyphens/leading zeros).\n"
         "- question_code values must be EXACT matches from ALLOWED_CODES (allowlist). If unsure, omit.\n"
+        "- Do NOT change code formatting: do not alter case, add/remove underscores or hyphens, change digits, reorder parts, or normalize/slugify in any way. Use letter-for-letter exact codes only.\n"
         "- Do NOT invent or rewrite question_text: for variables use metadata question_text verbatim; for group headers use the stem/base (from metadata or questionnaire stem).\n"
         "- Group headers are labels, not variables: use '<STEM>_GROUP' (or '<STEM>_GRID'); never use a real code as header.\n"
         "- Do NOT include range (min/max) variables inside groups.\n"
