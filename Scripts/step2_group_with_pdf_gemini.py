@@ -40,6 +40,7 @@ def build_prompt() -> str:
         "- Do NOT include routing/skip/display logic as recodes.\n\n"
         "GROUPING GUIDANCE\n"
         "- PRIMARY RULE: Group variables that are the same question repeated across columns. Confirm with the questionnaire: shared stem/wording (common lead-in).\n"
+        "- Stem discovery: Find stems from the PDF and confirm with metadata. Accept a stem when at least two cues agree (same lead-in, same answers, clear grid/layout, patterned codes, or close placement in the PDF); then include all matching metadata variables with compatible answers and exclude ranges.\n"
         "- Implicit multi-select groups are allowed if variables share grouping signals. Use ALL applicable signals:\n"
         "  • Shared stem/base prefix (e.g., Q1_1, Q1_2, Q1_97).\n"
         "  • Identical or highly similar answer lists (not only pa_type size, but labels if available).\n"
