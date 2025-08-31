@@ -154,6 +154,56 @@ def main() -> None:
         rc2, logs2, t2 = run_step(step2_cmd)
         if rc2 != 0:
             st.error(f"Step 2 failed ({t2:.1f}s)")
+            # Surface validation errors from step2 (unknown codes not in metadata)
+            try:
+                import re
+                unknown_in_groups: dict[str, list[str]] = {}
+                unknown_standalone: list[str] = []
+                invalid_recode_groups: dict[str, list[str]] = {}
+                invalid_recode_vars: dict[str, list[str]] = {}
+                for line in (logs2 or "").splitlines():
+                    m = re.search(r"Non-metadata sub-questions in group '([^']+)': \[(.*?)\]", line)
+                    if m:
+                        grp = m.group(1)
+                        raw = m.group(2)
+                        items = [x.strip().strip("'\"") for x in raw.split(",") if x.strip()]
+                        if items:
+                            unknown_in_groups[grp] = items
+                    m2 = re.search(r"Non-metadata standalone items: \[(.*?)\]", line)
+                    if m2:
+                        raw2 = m2.group(1)
+                        items2 = [x.strip().strip("'\"") for x in raw2.split(",") if x.strip()]
+                        unknown_standalone.extend(items2)
+                    m3 = re.search(r"Invalid recode_from for group header '([^']+)': \[(.*?)\]", line)
+                    if m3:
+                        grp2 = m3.group(1)
+                        raw3 = m3.group(2)
+                        items3 = [x.strip().strip("'\"") for x in raw3.split(",") if x.strip()]
+                        if items3:
+                            invalid_recode_groups[grp2] = items3
+                    m4 = re.search(r"Invalid recode_from for variable '([^']+)': \[(.*?)\]", line)
+                    if m4:
+                        var = m4.group(1)
+                        raw4 = m4.group(2)
+                        items4 = [x.strip().strip("'\"") for x in raw4.split(",") if x.strip()]
+                        if items4:
+                            invalid_recode_vars[var] = items4
+                if unknown_in_groups or unknown_standalone or invalid_recode_groups or invalid_recode_vars:
+                    st.error("Validation failed: output contains variables not present in metadata or invalid recode sources.")
+                    if unknown_in_groups:
+                        st.subheader("Unknown sub-questions by group")
+                        st.json(unknown_in_groups)
+                    if unknown_standalone:
+                        st.subheader("Unknown standalone variables")
+                        st.json(sorted(set(unknown_standalone)))
+                    if invalid_recode_groups:
+                        st.subheader("Invalid recode_from (group headers)")
+                        st.json(invalid_recode_groups)
+                    if invalid_recode_vars:
+                        st.subheader("Invalid recode_from (variables)")
+                        st.json(invalid_recode_vars)
+            except Exception:
+                pass
             with st.expander("Logs", expanded=True):
                 combined = (logs1 or "") + "\n" + (logs2 or "")
                 if not combined.strip():

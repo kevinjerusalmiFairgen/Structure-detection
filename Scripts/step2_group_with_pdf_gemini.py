@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from typing import Any, Dict, List
+import re
 
 try:
     from google import genai
@@ -18,24 +19,60 @@ except Exception as exc:
 
 def build_prompt() -> str:
     return (
-        "You are given: (1) a PDF questionnaire (vision file part) and (2) a COMPACT JSON array of SPSS metadata variables.\n"
-        "Goal: Using BOTH sources, reorganize ONLY the provided SPSS metadata into groups and produce a COMBINED questions JSON.\n\n"
-        "Rules:\n"
-        "- SOURCE OF TRUTH: SPSS metadata. Do NOT add variables or options not present in metadata.\n"
-        "- Manipulate metadata only: preserve codes and possible_answers exactly as provided; reorder into groups.\n"
-        "- Use the PDF ONLY to decide grouping (multi-select or grid) and recode relationships.\n"
-        "- Implicit groups are allowed: if the questionnaire structure strongly implies a group (shared stem, identical answer lists, consecutive codes, or layout), infer the group even if not explicitly labeled, but still use ONLY existing metadata variables.\n"
-        "- Group types: multi-select or grid. A group must have >=2 members.\n"
-        "- Do NOT include range (min/max) variables inside groups. Keep them as standalone items.\n"
-        "- Output MUST be JSON array. For grouped items, emit an object: {\"question_code\": group_code, \"question_text\": text, \"question_type\": \"multi-select\"|\"grid\", \"sub_questions\": [{\"question_code\": code, \"possible_answers\": {...}}]}.\n"
-        "- For standalone variables, emit: {\"question_code\": code, \"question_text\": text, \"question_type\": \"integer\"|\"single-select\", \"possible_answers\": {...}}.\n"
-        "- Optional recode metadata: If and only if a variable (or group) is a true recode (a hidden/computed variable derived by a formula from other variables), add \"recode_from\": [source_codes...]. Otherwise omit this field entirely. Do not guess.\n"
-        "- IMPORTANT: Do NOT confound recodes with logics (skip/display dependencies).\n"
-        "  * Recodes: hidden/computed variables produced from existing data (e.g., age group derived from AGE).\n"
-        "  * Logics: routing/enablement dependencies (e.g., show Q10 only if Q5=\"Yes\"). Logics are NOT recodes and must NOT appear as recode_from.\n"
-        "  * Only populate recode_from for genuine derived/computed variables; do not include gating/skip conditions.\n"
-        "- STRICT: All emitted question_code values must be a subset of the provided metadata codes. No invented codes.\n"
-        "- Return ONLY the final JSON array; no markdown.\n"
+        "INPUTS\n"
+        "- PDF questionnaire (vision)\n"
+        "- SPSS metadata COMPACT JSON + ALLOWED_CODES (exact allowlist)\n\n"
+        "OBJECTIVE\n"
+        "- Produce ONLY (a) multi-select groups and (b) true derived variables (recodes). Treat any grid as multi-select. Do NOT emit standalone non-recode variables. When a variable is truly computed, annotate it with recode_from listing exact ALLOWED_CODES sources (never routing/skip logic).\n\n"
+        "HARD CONSTRAINTS\n"
+        "- SOURCE OF TRUTH: metadata. Preserve codes and possible_answers exactly; do not add/invent/rename/reformat (case/underscores/hyphens/leading zeros).\n"
+        "- question_code values must be EXACT matches from ALLOWED_CODES (allowlist). If unsure, omit.\n"
+        "- Do NOT invent or rewrite question_text: for variables use metadata question_text verbatim; for group headers use the stem/base (from metadata or questionnaire stem).\n"
+        "- Group headers are labels, not variables: use '<STEM>_GROUP' (or '<STEM>_GRID'); never use a real code as header.\n"
+        "- Do NOT include range (min/max) variables inside groups.\n"
+        "- Use the PDF ONLY to decide grouping and true recodes.\n\n"
+        "DERIVED VARIABLES (RECODES)\n"
+        "- Only for genuine computed variables (indices/totals/bands).\n"
+        "- recode_from must be exact sources from ALLOWED_CODES; never group headers.\n"
+        "- Do NOT include routing/skip/display logic as recodes.\n\n"
+        "GROUPING GUIDANCE\n"
+        "- Implicit multi-select groups are allowed if variables share grouping signals. Use ALL applicable signals:\n"
+        "  • Shared stem/base prefix (e.g., Q1_1, Q1_2, Q1_97).\n"
+        "  • Identical or highly similar answer lists (not only pa_type size, but labels if available).\n"
+        "  • Consecutive or patterned codes (e.g., Q5_1..Q5_10).\n"
+        "  • Clear grid/layout cues from the PDF (columns/rows under a common stem).\n"
+        "  • Also ensure compatibility by pa_type from the compact metadata.\n"
+        "- Groups may not always be explicitly labeled in the questionnaire — if the structure (stem, identical answers, consecutive numbering, or layout) clearly implies a group, include it.\n\n"
+        "- Aim for completeness: include all matching members from metadata; groups must have ≥2 members.\n"
+        "- EXCLUSIVE/NO-ANSWER variants: include only if the exact code exists in ALLOWED_CODES. Accepted forms include numeric suffixes (Q1_97/Q1_98/Q1_99), token forms (Q2_noanswer/Q2_dontknow/Q2_dk/Q2_na/Q2_refused), and token-first variants (noanswer_Q2) if present.\n\n"
+        "OUTPUT SCHEMA (JSON array only, no markdown)\n"
+        "- Grouped (multi-select only, grids included as multi-select): {\"question_code\": \"<STEM>_GROUP\", \"question_text\": text, \"question_type\": \"multi-select\", \"sub_questions\": [{\"question_code\": code, \"possible_answers\": {...}}]}\n"
+        "- Standalone RECODE ONLY: {\"question_code\": code, \"question_text\": text, \"question_type\": \"single-select\"|\"integer\", \"possible_answers\": {...}, \"recode_from\": [source_codes...]}\n\n"
+        "EXAMPLE (format only; use only ALLOWED_CODES in your answer)\n"
+        "[\n"
+        "  {\n"
+        "    \"question_code\": \"Q1_GROUP\",\n"
+        "    \"question_text\": \"Q1\",\n"
+        "    \"question_type\": \"multi-select\",\n"
+        "    \"sub_questions\": [\n"
+        "      {\"question_code\": \"Q1_1\", \"possible_answers\": {\"1\": \"Yes\", \"0\": \"No\"}},\n"
+        "      {\"question_code\": \"Q1_97\", \"possible_answers\": {\"1\": \"Selected\", \"0\": \"Not selected\"}}\n"
+        "    ]\n"
+        "  },\n"
+        "  {\n"
+        "    \"question_code\": \"AGE_BAND\",\n"
+        "    \"question_text\": \"Age band\",\n"
+        "    \"question_type\": \"single-select\",\n"
+        "    \"possible_answers\": {\"1\": \"18-24\", \"2\": \"25-34\"},\n"
+        "    \"recode_from\": [\"AGE\"]\n"
+        "  }\n"
+        "]\n\n"
+        "CHECK BEFORE RESPONDING\n"
+        "- Every question_code ∈ ALLOWED_CODES (except group headers).\n"
+        "- Only emit multi-select groups (treat grids as multi-select); each group has ≥2 members; no ranges in groups.\n"
+        "- Do NOT emit standalone items unless they are true recodes (must include recode_from).\n"
+        "- Exclusive variants included only if present in ALLOWED_CODES.\n"
+        "- recode_from sources ∈ ALLOWED_CODES and are not group headers.\n"
     )
 
 
@@ -108,6 +145,10 @@ def main() -> None:
 
     # Prepare request
     prompt = build_prompt()
+    # Also pass explicit ALLOWED_CODES for exact matching
+    allowed_codes = [str(q.get("question_code")) for q in full_meta if q.get("question_code")]
+    allowed_codes_json = json.dumps(sorted(allowed_codes), ensure_ascii=False)
+
     contents = [
         Content(
             role="user",
@@ -115,6 +156,7 @@ def main() -> None:
                 Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
                 Part.from_text(text=prompt),
                 Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
+                Part.from_text(text="ALLOWED_CODES (exact match allowlist):\n" + allowed_codes_json),
             ],
         )
     ]
@@ -304,7 +346,6 @@ def main() -> None:
                             parts = code.split("_")
                             if len(parts) > 1:
                                 return "_".join(parts[:-1])
-                        import re
                         m = re.match(r"^(.*?)([A-Za-z]?\d{1,3})$", code)
                         return m.group(1) if m else code
                     base_to_members: Dict[str, List[Dict[str, Any]]] = {}
@@ -350,6 +391,94 @@ def main() -> None:
             raise SystemExit(2)
 
     with open(args.output, "w", encoding="utf-8") as f:
+        # Post-process: STRICT validation only. Do not auto-add or augment.
+        # Build metadata code set
+        allowed_codes: set[str] = set()
+        for q in full_meta:
+            c = str(q.get("question_code", ""))
+            if c:
+                allowed_codes.add(c)
+
+        unknown_in_groups: Dict[str, List[str]] = {}
+        unknown_standalone: List[str] = []
+        invalid_recode_groups: Dict[str, List[str]] = {}
+        invalid_recode_vars: Dict[str, List[str]] = {}
+
+        # Pre-collect group header codes to forbid using them as recode sources
+        group_header_codes: set[str] = set()
+        for it in data:
+            if isinstance(it, dict) and isinstance(it.get("sub_questions"), list):
+                gh = str(it.get("question_code", ""))
+                if gh:
+                    group_header_codes.add(gh)
+
+        for it in data:
+            if not isinstance(it, dict):
+                continue
+            subs = it.get("sub_questions")
+            if isinstance(subs, list):
+                grp_code = str(it.get("question_code", "GROUP"))
+                bad: List[str] = []
+                for sq in subs:
+                    if not isinstance(sq, dict):
+                        continue
+                    scode = str(sq.get("question_code", ""))
+                    if scode and scode not in allowed_codes:
+                        bad.append(scode)
+                if bad:
+                    unknown_in_groups[grp_code] = bad
+                # Validate group-level recodes
+                rec = it.get("recode_from")
+                if isinstance(rec, list):
+                    bad_rec: List[str] = []
+                    for src in rec:
+                        s = str(src)
+                        if not s or (s not in allowed_codes) or (s in group_header_codes):
+                            bad_rec.append(s)
+                    if bad_rec:
+                        invalid_recode_groups[grp_code] = bad_rec
+                # Validate sub-question recodes
+                for sq in subs:
+                    if not isinstance(sq, dict):
+                        continue
+                    rec2 = sq.get("recode_from")
+                    if isinstance(rec2, list):
+                        bad_rec2: List[str] = []
+                        for src in rec2:
+                            s2 = str(src)
+                            if not s2 or (s2 not in allowed_codes) or (s2 in group_header_codes):
+                                bad_rec2.append(s2)
+                        if bad_rec2:
+                            target = str(sq.get("question_code", "")) or "(unknown)"
+                            invalid_recode_vars[target] = bad_rec2
+            else:
+                code = str(it.get("question_code", ""))
+                if code and code not in allowed_codes:
+                    unknown_standalone.append(code)
+                rec = it.get("recode_from")
+                if isinstance(rec, list):
+                    bad_rec: List[str] = []
+                    for src in rec:
+                        s = str(src)
+                        if not s or (s not in allowed_codes) or (s in group_header_codes):
+                            bad_rec.append(s)
+                    if bad_rec:
+                        target = code or "(unknown)"
+                        invalid_recode_vars[target] = bad_rec
+
+        if unknown_in_groups or unknown_standalone or invalid_recode_groups or invalid_recode_vars:
+            for g, codes in unknown_in_groups.items():
+                print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
+            if unknown_standalone:
+                print(f"[error] Non-metadata standalone items: {unknown_standalone}")
+            for g, codes in invalid_recode_groups.items():
+                print(f"[error] Invalid recode_from for group header '{g}': {codes}")
+            for v, codes in invalid_recode_vars.items():
+                print(f"[error] Invalid recode_from for variable '{v}': {codes}")
+            print("[fail] Output contains invalid variables or recode sources. Fix the prompt/grouping and retry.")
+            raise SystemExit(3)
+
+        # If validation passed, write output as-is
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"[group] Written grouped questions to: {args.output}")
 
