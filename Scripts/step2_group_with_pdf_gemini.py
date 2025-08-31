@@ -55,6 +55,7 @@ def build_prompt() -> str:
         "  • Patterned codes (Q1_1..Q1_10, etc.).  \n"
         "  • Grid/column layout in PDF.  \n"
         "  • Shared pa_type in metadata.  \n"
+        "- If a large grid contains clear sub-groups, emit separate groups for each sub-stem; do not collapse distinct sub-groups into one.\n"
         "- Groups must have ≥2 members and be complete (include all matching members from metadata).\n"
         "- Do NOT group by section headings alone—only by true repeated-question stems.\n"
         "- Include explicit “exclusive/no-answer” codes (e.g., Q1_97, Q2_dk) **only if present in ALLOWED_CODES**.\n\n"
