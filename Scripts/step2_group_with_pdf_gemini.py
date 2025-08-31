@@ -478,8 +478,28 @@ def main() -> None:
             print("[fail] Output contains invalid variables or recode sources. Fix the prompt/grouping and retry.")
             raise SystemExit(3)
 
-        # If validation passed, write output as-is
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        # If validation passed, filter out standalone non-recode items (warn, do not fail)
+        non_recode_standalone: List[str] = []
+        filtered_data: List[Dict[str, Any]] = []
+        for it in data:
+            if not isinstance(it, dict):
+                continue
+            subs = it.get("sub_questions")
+            if isinstance(subs, list):
+                filtered_data.append(it)
+            else:
+                code = str(it.get("question_code", ""))
+                rec = it.get("recode_from")
+                if isinstance(rec, list) and len(rec) > 0:
+                    filtered_data.append(it)
+                else:
+                    if code:
+                        non_recode_standalone.append(code)
+
+        if non_recode_standalone:
+            print(f"[warn] Dropping standalone non-recode items: {sorted(set(non_recode_standalone))}")
+
+        json.dump(filtered_data, f, ensure_ascii=False, indent=2)
     print(f"[group] Written grouped questions to: {args.output}")
 
 

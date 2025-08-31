@@ -218,6 +218,20 @@ def main() -> None:
             return
         status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s")
 
+        # Surface warnings for dropped non-recode standalones
+        if "[warn] Dropping standalone non-recode items:" in (logs2 or ""):
+            try:
+                import re
+                m = re.search(r"\[warn\] Dropping standalone non-recode items: \[(.*?)\]", logs2)
+                if m:
+                    raw = m.group(1)
+                    items = [x.strip().strip("'\"") for x in raw.split(",") if x.strip()]
+                    if items:
+                        st.warning("Dropped standalone non-recode items (kept only multi and recodes):")
+                        st.json(sorted(set(items)))
+            except Exception:
+                pass
+
         # Success: read outputs
         grouped_path = os.path.join(outdir, "step2_grouped_questions.json")
         if not os.path.exists(grouped_path):
