@@ -92,6 +92,8 @@ def main() -> None:
     parser.add_argument("--api-key", dest="api_key")
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
     parser.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash with higher thinking budget (4096)")
+    # Accept --show-thoughts for compatibility with UI; currently ignored in this branch
+    parser.add_argument("--show-thoughts", dest="show_thoughts", action="store_true", help="(No-op) Accepts UI flag; thoughts not printed in this build")
 
     args = parser.parse_args()
 
@@ -255,6 +257,7 @@ def main() -> None:
         )
         return getattr(resp, "text", "") or "[]"
 
+    print(f"[info] Using model: {model_name}")
     text = call_model(model_name, generate_cfg)
     if not isinstance(text, str) or not text.strip():
         # Write raw empty output marker and exit
@@ -380,6 +383,15 @@ def main() -> None:
                     return True
         return False
 
+    def count_groups(items: List[Dict[str, Any]]) -> int:
+        n = 0
+        for it in items:
+            if isinstance(it, dict):
+                subs = it.get("sub_questions")
+                if isinstance(subs, list) and len(subs) >= 2:
+                    n += 1
+        return n
+
     if not has_groups(data):
         # Retry once with alternate model/settings
         try:
@@ -469,6 +481,7 @@ def main() -> None:
             print(f"[error] Retry failed: {exc}")
             raise SystemExit(2)
 
+    print(f"[debug] Groups returned by model (pre-validation): {count_groups(data)}")
     with open(args.output, "w", encoding="utf-8") as f:
         # Post-process: STRICT validation only. Do not auto-add or augment.
         # Build metadata code set
@@ -794,6 +807,8 @@ def main() -> None:
             print(f"[warn] Dropping standalone non-recode items: {sorted(set(non_recode_standalone))}")
         if non_metadata_standalone:
             print(f"[warn] Dropped standalone non-metadata items: {sorted(set(non_metadata_standalone))}")
+
+        print(f"[debug] Groups after validation/filtering: {count_groups(filtered_data)}")
 
         json.dump(filtered_data, f, ensure_ascii=False, indent=2)
     print(f"[group] Written grouped questions to: {args.output}")
