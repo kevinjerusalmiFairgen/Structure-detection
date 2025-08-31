@@ -47,6 +47,7 @@ def build_prompt() -> str:
         "- Never treat routing/skip/display logic as recodes.  \n"
         "- Do not force recodes to look like their inputs; preserve their actual form from metadata.\n\n"
         "GROUPING RULES\n"
+        "- Stems from data; relationships from PDF: derive stem candidates from metadata codes; confirm grouping/relationships with PDF lead-ins and layout.\n"
         "- Group variables that repeat the same question across columns under a shared stem.\n"
         "- Accept a stem only if at least two signals agree:\n"
         "  • Common lead-in wording in PDF.  \n"
