@@ -141,6 +141,18 @@ def main() -> None:
         thinking_budget = 1024
         temperature = 0.0
 
+    # Increase thinking budget when input is complex (more variables / larger payload)
+    try:
+        if meta_vars >= 3000 or compact_bytes >= 3_000_000:
+            thinking_budget = max(thinking_budget, 3072)
+        elif meta_vars >= 2000 or compact_bytes >= 2_000_000:
+            thinking_budget = max(thinking_budget, 2048)
+        elif meta_vars >= 1200 or compact_bytes >= 1_200_000:
+            thinking_budget = max(thinking_budget, 1536)
+        print(f"[info] Thinking budget set to: {thinking_budget}")
+    except Exception:
+        pass
+
     # Upload questionnaire (PDF only)
     pdf_path = args.pdf
     if str(pdf_path).lower().endswith(".docx"):
