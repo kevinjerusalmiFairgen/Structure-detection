@@ -37,7 +37,10 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Settings")
-        use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=True)
+        use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=False)
+        show_thoughts = st.toggle("Show Gemini thinking", value=False)
+        use_fallback = st.toggle("Heuristic fallback if no groups", value=True)
+        app_docx_text_convert = st.toggle("Use basic DOCX→PDF in app (not recommended)", value=False)
         # Fixed JSON indentation in scripts; no user control
         show_tb = st.toggle("Show Python traceback on error", value=True)
         # Read Gemini key from Streamlit secrets or env; no manual entry in UI
@@ -73,8 +76,8 @@ def main() -> None:
             f.write(sav_file.getbuffer())
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.getbuffer())
-        # If DOCX uploaded, convert to a temporary PDF by extracting text and writing to simple PDF
-        if pdf_path.lower().endswith(".docx"):
+        # Prefer step2's higher-fidelity DOCX conversion; only use app basic conversion if explicitly enabled
+        if app_docx_text_convert and pdf_path.lower().endswith(".docx"):
             try:
                 from docx import Document
                 import fitz  # PyMuPDF
@@ -85,7 +88,6 @@ def main() -> None:
                         text.append(p.text)
                 text_content = "\n".join(text) or "(empty document)"
                 pdf_out = os.path.join(workdir, os.path.splitext(os.path.basename(pdf_path))[0] + ".pdf")
-                # Write a very basic PDF with the extracted text
                 pdf_doc = fitz.open()
                 page = pdf_doc.new_page()
                 rect = page.rect
@@ -144,6 +146,12 @@ def main() -> None:
         ]
         if use_flash:
             step2_cmd.append("--flash")
+        else:
+            step2_cmd += ["--model", "gemini-2.5-pro"]
+        if show_thoughts:
+            step2_cmd.append("--show-thoughts")
+        if use_fallback:
+            step2_cmd.append("--fallback")
         effective_api_key = (secret_key or os.environ.get("GOOGLE_API_KEY", "")).strip()
         if effective_api_key:
             os.environ["GOOGLE_API_KEY"] = effective_api_key
