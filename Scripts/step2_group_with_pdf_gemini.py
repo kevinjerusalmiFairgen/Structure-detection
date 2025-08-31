@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import time
+import shutil
+import subprocess
 from typing import Any, Dict, List
 import re
 
@@ -124,13 +126,57 @@ def main() -> None:
         else:
             pa_type = "labels:0"
         compact_items.append({"question_code": code, "question_text": text, "pa_type": pa_type})
-    # Light size cap for faster calls while staying smart
-    if len(compact_items) > 1200:
-        compact_items = compact_items[:1200]
     compact_json = json.dumps(compact_items, ensure_ascii=False)
 
-    # Upload PDF
-    with open(args.pdf, "rb") as f:
+    # Upload questionnaire (auto-convert DOCX to a basic PDF if needed)
+    pdf_path = args.pdf
+    if str(pdf_path).lower().endswith(".docx"):
+        try:
+            print("[info] Converting DOCX to PDF for upload…")
+            # Prefer LibreOffice CLI if available (preserves layout/tables)
+            lo = shutil.which("soffice") or shutil.which("libreoffice")
+            base_no_ext = os.path.splitext(pdf_path)[0]
+            converted_pdf = base_no_ext + "_converted.pdf"
+            if lo:
+                outdir = os.path.dirname(pdf_path) or "."
+                cmd = [lo, "--headless", "--convert-to", "pdf", "--outdir", outdir, pdf_path]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode == 0:
+                    candidate = base_no_ext + ".pdf"
+                    if os.path.exists(candidate):
+                        os.replace(candidate, converted_pdf)
+                    pdf_path = converted_pdf
+                    print(f"[info] DOCX converted via LibreOffice: {pdf_path}")
+                else:
+                    raise RuntimeError(proc.stderr or "LibreOffice conversion failed")
+            else:
+                # Fallbacks: try docx2pdf (requires Word on macOS), else text-only conversion
+                try:
+                    from docx2pdf import convert  # type: ignore
+                    convert(pdf_path, converted_pdf)
+                    if not os.path.exists(converted_pdf):
+                        raise RuntimeError("docx2pdf produced no output")
+                    pdf_path = converted_pdf
+                    print(f"[info] DOCX converted via docx2pdf: {pdf_path}")
+                except Exception:
+                    # Last resort: text-only
+                    from docx import Document  # type: ignore
+                    import fitz  # type: ignore
+                    doc = Document(pdf_path)
+                    text_parts = [p.text for p in doc.paragraphs if p.text]
+                    text_content = "\n".join(text_parts) or "(empty document)"
+                    pdf_doc = fitz.open()
+                    page = pdf_doc.new_page()
+                    page.insert_textbox(page.rect, text_content, fontsize=11, fontname="helv")
+                    pdf_doc.save(converted_pdf)
+                    pdf_doc.close()
+                    pdf_path = converted_pdf
+                    print(f"[info] DOCX converted to simple text PDF: {pdf_path}")
+        except Exception as exc:
+            print(f"[error] Failed to convert DOCX to PDF: {exc}")
+            raise SystemExit(2)
+
+    with open(pdf_path, "rb") as f:
         file_obj = client.files.upload(file=f, config=UploadFileConfig(mime_type="application/pdf"))
 
     # Wait until ACTIVE
