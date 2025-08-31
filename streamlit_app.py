@@ -195,7 +195,14 @@ def main() -> None:
                 st.exception(RuntimeError("Step 2 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
             return
-        status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s")
+        # Parse model used from step2 logs (accounts for auto-switching to Pro in script)
+        try:
+            import re as _re
+            m_used = _re.search(r"\[info\] Using model:\s*([^\r\n]+)", logs2 or "")
+            model_used = (m_used.group(1).strip() if m_used else ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro"))
+        except Exception:
+            model_used = ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro")
+        status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s (model: {model_used})")
 
         # Surface warnings for dropped standalones
         if "[warn] Dropping standalone non-recode items:" in (logs2 or "") or "[warn] Dropped standalone non-metadata items:" in (logs2 or ""):
@@ -273,7 +280,7 @@ def main() -> None:
 
         m1, m2, m3 = st.columns(3)
         m1.metric("Groups", f"{num_groups}")
-        m2.metric("Flash", "Yes" if use_flash else "No")
+        m2.metric("Model", model_used)
         m3.metric("Total time", f"{total_elapsed:.1f}s")
 
         st.subheader("Groups (first 10)")

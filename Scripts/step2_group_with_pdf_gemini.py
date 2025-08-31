@@ -92,8 +92,6 @@ def main() -> None:
     parser.add_argument("--api-key", dest="api_key")
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
     parser.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash with higher thinking budget (4096)")
-    # Accept --show-thoughts for compatibility with UI; currently ignored in this branch
-    parser.add_argument("--show-thoughts", dest="show_thoughts", action="store_true", help="(No-op) Accepts UI flag; thoughts not printed in this build")
 
     args = parser.parse_args()
 
@@ -498,7 +496,7 @@ def main() -> None:
                         target = code or "(unknown)"
                         invalid_recode_vars[target] = bad_rec
 
-        # If any unknowns or invalid recodes exist, attempt ONE correction round via the model
+        # If any unknowns or invalid recodes exist, attempt ONE targeted correction round via the model
         if unknown_in_groups or unknown_standalone or invalid_recode_groups or invalid_recode_vars:
             try:
                 print("[info] Attempting targeted correction for unknown/invalid items using ALLOWED_CODES…")
@@ -552,9 +550,9 @@ def main() -> None:
                         mapping = json.loads(snippet)
                     except Exception:
                         mapping = {}
-                code_replacements = {}
-                drop_codes = set()
-                source_replacements = {}
+                code_replacements: Dict[str, str] = {}
+                drop_codes: set[str] = set()
+                source_replacements: Dict[str, str] = {}
                 if isinstance(mapping, dict):
                     for entry in mapping.get("code_replacements", []) or []:
                         bad = str(entry.get("bad", ""))
@@ -571,9 +569,7 @@ def main() -> None:
                             source_replacements[bads] = goods
                 # Apply mapping to data (only touches offending codes)
                 def replace_code(code_value: str) -> str:
-                    if code_value in code_replacements:
-                        return code_replacements[code_value]
-                    return code_value
+                    return code_replacements.get(code_value, code_value)
                 new_items: List[Dict[str, Any]] = []
                 for it in data:
                     if not isinstance(it, dict):
@@ -700,14 +696,6 @@ def main() -> None:
                         invalid_recode_vars[target] = bad_rec
 
         if unknown_in_groups or invalid_recode_groups or invalid_recode_vars:
-            for g, codes in unknown_in_groups.items():
-                print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
-            for g, codes in invalid_recode_groups.items():
-                print(f"[error] Invalid recode_from for group header '{g}': {codes}")
-            for v, codes in invalid_recode_vars.items():
-                print(f"[error] Invalid recode_from for variable '{v}': {codes}")
-            print("[fail] Output contains invalid variables or recode sources in groups. Fix the prompt/grouping and retry.")
-            raise SystemExit(3)
             for g, codes in unknown_in_groups.items():
                 print(f"[error] Non-metadata sub-questions in group '{g}': {codes}")
             for g, codes in invalid_recode_groups.items():
