@@ -99,6 +99,7 @@ def main() -> None:
                 return
 
         st.info("Starting pipeline…")
+        pipeline_t0 = time.time()
         status = st.empty()
         # Step 1: metadata (.sav or .xlsx)
         status.write("[step] 1/2 Extract metadata…")
@@ -272,7 +273,8 @@ def main() -> None:
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
-        status.write("Completed. Showing results…")
+        total_elapsed = time.time() - pipeline_t0
+        status.write(f"Completed in {total_elapsed:.1f}s. Showing results…")
         st.success("Done")
 
         # Load groups.json
@@ -291,9 +293,10 @@ def main() -> None:
         groups_list = groups_obj.get("groups") if isinstance(groups_obj, dict) else []
         num_groups = len(groups_list) if isinstance(groups_list, list) else 0
 
-        m1, m2 = st.columns(2)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Groups", f"{num_groups}")
         m2.metric("Flash", "Yes" if use_flash else "No")
+        m3.metric("Total time", f"{total_elapsed:.1f}s")
 
         st.subheader("Groups (first 10)")
         st.json(groups_list[:10], expanded=False)
