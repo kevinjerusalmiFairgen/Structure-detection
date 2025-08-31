@@ -33,7 +33,7 @@ def main() -> None:
     st.set_page_config(page_title="Questionnaire Grouper", page_icon="📊", layout="wide")
 
     st.title("📊 Questionnaire Grouper")
-    st.caption("Upload an SPSS .sav and the questionnaire PDF. The app extracts metadata and groups questions (multi-select/grid), optionally using Gemini 2.5 Flash.")
+    st.caption("Upload an SPSS .sav and the questionnaire PDF. The app extracts metadata and groups questions (multi-select), optionally using Gemini 2.5 Flash.")
 
     with st.sidebar:
         st.header("Settings")
@@ -52,7 +52,7 @@ def main() -> None:
     with c1:
         sav_file = st.file_uploader("Data file (.sav or .xlsx)", type=["sav","xlsx"], accept_multiple_files=False)
     with c2:
-        pdf_file = st.file_uploader("Questionnaire (PDF or DOCX)", type=["pdf","docx"], accept_multiple_files=False)
+        pdf_file = st.file_uploader("Questionnaire (PDF)", type=["pdf"], accept_multiple_files=False)
 
     st.divider()
 

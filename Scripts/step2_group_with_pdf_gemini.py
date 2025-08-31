@@ -130,84 +130,24 @@ def main() -> None:
         compact_items.append({"question_code": code, "question_text": text, "pa_type": pa_type})
     compact_json = json.dumps(compact_items, ensure_ascii=False)
 
-    # Upload questionnaire (auto-convert DOCX to a basic PDF if needed)
+    # Auto-switch to Pro if metadata is large (for better context handling)
+    try:
+        meta_vars = len(full_meta)
+        compact_bytes = len(compact_json.encode("utf-8"))
+        too_big = (meta_vars >= 1500) or (compact_bytes >= 1_500_000)
+    except Exception:
+        too_big = False
+    if ("flash" in str(locals().get("model_name", ""))) and too_big:
+        print(f"[info] Metadata is large (vars={meta_vars}, size={compact_bytes} bytes). Switching to gemini-2.5-pro.")
+        model_name = "gemini-2.5-pro"
+        thinking_budget = 1024
+        temperature = 0.0
+
+    # Upload questionnaire (PDF only)
     pdf_path = args.pdf
     if str(pdf_path).lower().endswith(".docx"):
-        try:
-            print("[info] Converting DOCX to PDF for upload…")
-            # Prefer LibreOffice CLI if available (preserves layout/tables)
-            lo = shutil.which("soffice") or shutil.which("libreoffice")
-            base_no_ext = os.path.splitext(pdf_path)[0]
-            converted_pdf = base_no_ext + "_converted.pdf"
-            if lo:
-                outdir = os.path.dirname(pdf_path) or "."
-                cmd = [lo, "--headless", "--convert-to", "pdf", "--outdir", outdir, pdf_path]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode == 0:
-                    candidate = base_no_ext + ".pdf"
-                    if os.path.exists(candidate):
-                        os.replace(candidate, converted_pdf)
-                    pdf_path = converted_pdf
-                    print(f"[info] DOCX converted via LibreOffice: {pdf_path}")
-                else:
-                    raise RuntimeError(proc.stderr or "LibreOffice conversion failed")
-            else:
-                # Fallbacks: try docx2pdf (requires Word on macOS), else text-only conversion
-                try:
-                    from docx2pdf import convert  # type: ignore
-                    convert(pdf_path, converted_pdf)
-                    if not os.path.exists(converted_pdf):
-                        raise RuntimeError("docx2pdf produced no output")
-                    pdf_path = converted_pdf
-                    print(f"[info] DOCX converted via docx2pdf: {pdf_path}")
-                except Exception:
-                    # Last resort: text-only with pagination and basic table text
-                    from docx import Document  # type: ignore
-                    import fitz  # type: ignore
-                    doc = Document(pdf_path)
-                    lines = []
-                    for p in doc.paragraphs:
-                        t = p.text.strip()
-                        if t:
-                            lines.append(t)
-                    # Extract simple table text
-                    for tbl in getattr(doc, 'tables', []) or []:
-                        lines.append("[TABLE]")
-                        for row in tbl.rows:
-                            cells = [c.text.strip() for c in row.cells]
-                            if any(cells):
-                                lines.append(" | ".join(cells))
-                    if not lines:
-                        lines = ["(empty document)"]
-                    pdf_doc = fitz.open()
-                    margin = 36
-                    line_height = 13
-                    max_lines = 60
-                    chunk = []
-                    for i, ln in enumerate(lines, 1):
-                        chunk.append(ln)
-                        if len(chunk) >= max_lines:
-                            page = pdf_doc.new_page()
-                            y = margin
-                            for cl in chunk:
-                                page.insert_text((margin, y), cl, fontsize=10, fontname="helv")
-                                y += line_height
-                            chunk = []
-                    if chunk:
-                        page = pdf_doc.new_page()
-                        y = margin
-                        for cl in chunk:
-                            page.insert_text((margin, y), cl, fontsize=10, fontname="helv")
-                            y += line_height
-                    pdf_doc.save(converted_pdf)
-                    pdf_doc.close()
-                    pdf_path = converted_pdf
-                    size_kb = os.path.getsize(pdf_path) / 1024.0 if os.path.exists(pdf_path) else 0.0
-                    print(f"[info] DOCX converted to simple text PDF: {pdf_path} ({size_kb:.1f} KB)")
-        except Exception as exc:
-            print(f"[error] Failed to convert DOCX to PDF: {exc}")
-            raise SystemExit(2)
-
+        print("[error] DOCX is no longer supported. Please provide a PDF.")
+        raise SystemExit(2)
     with open(pdf_path, "rb") as f:
         file_obj = client.files.upload(file=f, config=UploadFileConfig(mime_type="application/pdf"))
 
