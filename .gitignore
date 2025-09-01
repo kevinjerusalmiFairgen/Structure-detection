@@ -6,3 +6,6 @@ Output/
 __pycache__/
 *.pyc
 
+
+# Streamlit secrets
+.streamlit/
