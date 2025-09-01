@@ -189,13 +189,32 @@ def main() -> None:
         # Parse model used from step2 logs (accounts for auto-switching to Pro in script)
         try:
             import re as _re
-            m_used = _re.search(r"\[info\] Using model:\s*([^\r\n]+)", logs2 or "")
+            # Model (supports both "Using model:" and "Using model (sharded):")
+            m_used = _re.search(r"\[info\] Using model(?:.*)?:\s*([^\r\n]+)", logs2 or "")
             model_used = (m_used.group(1).strip() if m_used else "(unknown)")
             m_tokens = _re.search(r"\[info\] Estimated tokens:\s*(\d+)", logs2 or "")
-            tokens_str = f", tokens: {m_tokens.group(1)}" if (model_used.startswith("gemini-2.5-pro") and m_tokens) else ""
+            tokens_str = f", tokens: {m_tokens.group(1)}" if (m_tokens) else ""
+            # Shards
+            m_shards = _re.search(r"\[info\] Shards:\s*(\d+)\s*\(sizes:\s*\[([^\]]+)\]\);\s*with overlap sizes:\s*\[([^\]]+)\]", logs2 or "")
+            shards_cnt = int(m_shards.group(1)) if m_shards else 1
+            shards_sizes = m_shards.group(2).strip() if m_shards else "-"
+            shards_ovlp = m_shards.group(3).strip() if m_shards else "-"
+            # Dedupe and fallback
+            dedupe_used = ("[info] Running LLM deduplication refinement…" in (logs2 or ""))
+            fallback_used = ("emitting heuristic prefix-based groups as fallback" in (logs2 or ""))
+            # Group counts
+            m_pre = _re.search(r"\[debug\] Groups returned by model \(pre-validation\):\s*(\d+)", logs2 or "")
+            m_post = _re.search(r"\[debug\] Groups after validation/filtering:\s*(\d+)", logs2 or "")
+            groups_pre = int(m_pre.group(1)) if m_pre else None
+            groups_post = int(m_post.group(1)) if m_post else None
         except Exception:
             model_used = "(unknown)"
             tokens_str = ""
+            shards_cnt, shards_sizes, shards_ovlp = 1, "-", "-"
+            dedupe_used = False
+            fallback_used = False
+            groups_pre = None
+            groups_post = None
         status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s (model: {model_used}{tokens_str})")
 
         # Surface warnings for dropped standalones
@@ -278,9 +297,22 @@ def main() -> None:
         with m2:
             st.metric("Recodes", f"{num_recodes}")
         with m3:
-            st.metric("Model", model_used + (f" (≈{m_tokens.group(1)} tokens)" if ('m_tokens' in locals() and m_tokens and model_used.startswith('gemini-2.5-pro')) else ""))
+            st.metric("Model", model_used + (tokens_str or ""))
         with m4:
             st.metric("Total time", f"{total_elapsed:.1f}s")
+
+        # Run details
+        with st.expander("Run details", expanded=False):
+            st.write(f"Shards: {shards_cnt}")
+            if shards_cnt and shards_cnt > 1:
+                st.write(f"Shard sizes: [{shards_sizes}]")
+                st.write(f"Overlap sizes: [{shards_ovlp}]")
+            st.write(f"LLM dedupe: {'Yes' if dedupe_used else 'No'}")
+            st.write(f"Heuristic fallback used: {'Yes' if fallback_used else 'No'}")
+            if groups_pre is not None:
+                st.write(f"Groups pre-validation: {groups_pre}")
+            if groups_post is not None:
+                st.write(f"Groups after validation: {groups_post}")
 
         st.subheader("Groups (first 10)")
         st.json(groups_list[:10], expanded=False)
