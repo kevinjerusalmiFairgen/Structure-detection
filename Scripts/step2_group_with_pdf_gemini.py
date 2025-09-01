@@ -19,7 +19,57 @@ except Exception as exc:
     ) from exc
 
 
-def build_prompt() -> str:
+def build_prompt(use_pdf: bool) -> str:
+    if not use_pdf:
+        return (
+            "INPUTS\n"
+            "- SPSS metadata (COMPACT JSON) + ALLOWED_CODES (exact allowlist)\n\n"
+            "OBJECTIVE\n"
+            "- Using ONLY metadata, detect and group repeated-question variables (multi-select, grids).\n"
+            "- Identify genuine recoded variables (indices/totals/bands).\n"
+            "- Output ONLY:\n"
+            "  • Multi-select groups (including grids).\n"
+            "  • True recodes.\n"
+            "- Do NOT output plain standalone variables.\n\n"
+            "HARD CONSTRAINTS\n"
+            "- SOURCE OF TRUTH: metadata. Never invent or normalize.\n"
+            "- question_code values: must be EXACT matches from ALLOWED_CODES (letter-for-letter).\n"
+            "- Preserve codes and possible_answers exactly as in metadata. Do not add, rename, reformat, reorder, slugify, or alter case/hyphens/underscores/digits.\n"
+            "- Use metadata question_text verbatim for sub-questions.\n"
+            "- Do not include range/min/max variables in groups.\n"
+            "- Never treat routing/skip/display logic as recodes.\n\n"
+            "GROUPING (metadata-only)\n"
+            "- Group when at least one strong metadata signal holds: identical/highly similar possible_answers, patterned codes (Q1_1..Q1_10), shared stems in metadata question_text, or shared types.\n"
+            "- Groups must have ≥2 members and be complete (include all matching members from metadata).\n\n"
+            "DERIVED VARIABLES (RECODES)\n"
+            "- Include only true computed variables (indices/totals/bands).\n"
+            "- recode_from: list exact variable codes from ALLOWED_CODES (not group headers).\n\n"
+            "OUTPUT SCHEMA (JSON array only)\n"
+            "[\n"
+            "  {\n"
+            "    \"question_code\": \"<STEM>_GROUP\",\n"
+            "    \"question_text\": \"<stem text>\",\n"
+            "    \"question_type\": \"multi-select\",\n"
+            "    \"sub_questions\": [\n"
+            "      {\"question_code\": \"<code>\", \"possible_answers\": {...}},\n"
+            "      {\"question_code\": \"<code>\", \"possible_answers\": {...}}\n"
+            "    ]\n"
+            "  },\n"
+            "  {\n"
+            "    \"question_code\": \"<derived_code>\",\n"
+            "    \"question_text\": \"<metadata question_text>\",\n"
+            "    \"question_type\": \"single-select\" | \"integer\" | \"other as in metadata\",\n"
+            "    \"possible_answers\": {...},\n"
+            "    \"recode_from\": [\"<source_code1>\", \"<source_code2>\"]\n"
+            "  }\n"
+            "]\n\n"
+            "CHECKLIST\n"
+            "- ✅ Every question_code ∈ ALLOWED_CODES (except group headers).\n"
+            "- ✅ Only multi-select groups and true recodes are included.\n"
+            "- ✅ No standalone one-offs (unless recode with recode_from).\n"
+            "- ✅ No ranges/min/max inside groups.\n"
+            "- ✅ recode_from sources are real codes from ALLOWED_CODES (not group headers).\n"
+        )
     return (
         "INPUTS\n"
         "- SPSS metadata (COMPACT JSON) + ALLOWED_CODES (exact allowlist)\n"
@@ -86,7 +136,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Group metadata using the questionnaire PDF + SPSS metadata in a single Gemini call."
     )
-    parser.add_argument("--pdf", required=True, help="Path to the questionnaire PDF")
+    parser.add_argument("--pdf", required=False, default="", help="Path to the questionnaire PDF (optional)")
     parser.add_argument("--metadata", required=True, help="Path to metadata questions JSON (from step1)")
     parser.add_argument("--output", required=True, help="Path to write the combined grouped JSON")
     parser.add_argument("--model", default="gemini-2.5-pro")
@@ -175,39 +225,39 @@ def main() -> None:
     except Exception:
         pass
 
-    # Upload questionnaire (PDF only)
-    pdf_path = args.pdf
-    if str(pdf_path).lower().endswith(".docx"):
-        print("[error] DOCX is no longer supported. Please provide a PDF.")
-        raise SystemExit(2)
-    with open(pdf_path, "rb") as f:
-        file_obj = client.files.upload(file=f, config=UploadFileConfig(mime_type="application/pdf"))
+    # Optional questionnaire upload (PDF only)
+    pdf_path = (args.pdf or "").strip()
+    file_obj = None
+    if pdf_path:
+        if str(pdf_path).lower().endswith(".docx"):
+            print("[error] DOCX is no longer supported. Please provide a PDF.")
+            raise SystemExit(2)
+        with open(pdf_path, "rb") as f:
+            file_obj = client.files.upload(file=f, config=UploadFileConfig(mime_type="application/pdf"))
 
-    # Wait until ACTIVE
-    start = time.time()
-    name = getattr(file_obj, "name", None)
-    while True:
-        refreshed = client.files.get(name=name)
-        state = getattr(refreshed, "state", None)
-        if state in ("ACTIVE", "SUCCEEDED", "READY"):
-            file_obj = refreshed
-            break
-        if time.time() - start > 90:
-            raise SystemExit("Timed out waiting for PDF to be ready.")
-        time.sleep(1.0)
+        # Wait until ACTIVE
+        start = time.time()
+        name = getattr(file_obj, "name", None)
+        while True:
+            refreshed = client.files.get(name=name)
+            state = getattr(refreshed, "state", None)
+            if state in ("ACTIVE", "SUCCEEDED", "READY"):
+                file_obj = refreshed
+                break
+            if time.time() - start > 90:
+                raise SystemExit("Timed out waiting for PDF to be ready.")
+            time.sleep(1.0)
 
     # Prepare request
-    prompt = build_prompt()
-    contents = [
-        Content(
-            role="user",
-            parts=[
-                Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
-                Part.from_text(text=prompt),
-                Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
-            ],
-        )
+    prompt = build_prompt(use_pdf=(file_obj is not None))
+    user_parts = [
+        Part.from_text(text=prompt),
+        Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
     ]
+    if file_obj is not None:
+        # Include PDF only if provided
+        user_parts.insert(0, Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"))
+    contents = [Content(role="user", parts=user_parts)]
 
     # Rough input token estimate (excludes PDF tokens). 1 token ≈ 4 bytes heuristic.
     try:

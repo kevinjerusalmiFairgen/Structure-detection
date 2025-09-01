@@ -49,13 +49,13 @@ def main() -> None:
     with c1:
         sav_file = st.file_uploader("Data file (.sav or .xlsx)", type=["sav","xlsx"], accept_multiple_files=False)
     with c2:
-        pdf_file = st.file_uploader("Questionnaire (PDF)", type=["pdf"], accept_multiple_files=False)
+        pdf_file = st.file_uploader("Questionnaire (PDF) — optional", type=["pdf"], accept_multiple_files=False)
 
     st.divider()
 
     if run_button:
-        if not sav_file or not pdf_file:
-            st.error("Please upload both the data file and the questionnaire.")
+        if not sav_file:
+            st.error("Please upload the data file.")
             return
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -65,11 +65,13 @@ def main() -> None:
         os.makedirs(outdir, exist_ok=True)
 
         sav_path = os.path.join(workdir, sav_file.name)
-        pdf_path = os.path.join(workdir, pdf_file.name)
+        pdf_path = ""
         with open(sav_path, "wb") as f:
             f.write(sav_file.getbuffer())
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_file.getbuffer())
+        if pdf_file is not None:
+            pdf_path = os.path.join(workdir, pdf_file.name)
+            with open(pdf_path, "wb") as f:
+                f.write(pdf_file.getbuffer())
 
         st.info("Starting pipeline…")
         pipeline_t0 = time.time()
@@ -110,10 +112,11 @@ def main() -> None:
         status.write("[step] 2/2 Group with PDF+metadata…")
         step2_cmd = [
             sys.executable, os.path.join(SCRIPTS_DIR, "step2_group_with_pdf_gemini.py"),
-            "--pdf", pdf_path,
             "--metadata", meta_out,
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
         ]
+        if pdf_path:
+            step2_cmd += ["--pdf", pdf_path]
         effective_api_key = (secret_key or os.environ.get("GOOGLE_API_KEY", "")).strip()
         if effective_api_key:
             os.environ["GOOGLE_API_KEY"] = effective_api_key

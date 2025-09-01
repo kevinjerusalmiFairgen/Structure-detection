@@ -31,15 +31,16 @@ def step1_extract_metadata(sav_path: str, output_json: str, include_empty: bool 
     return run(" ".join(args), quiet=quiet)
 
 
-def step2_extract_llm_pdf(pdf_path: str, metadata_path: str, output_json: str, api_key: str | None = None, *, quiet: bool = False, flash: bool = False) -> int:
+def step2_extract_llm_pdf(pdf_path: str | None, metadata_path: str, output_json: str, api_key: str | None = None, *, quiet: bool = False, flash: bool = False) -> int:
     script = os.path.join(ROOT, "Scripts", "step2_group_with_pdf_gemini.py")
     args = [
         sys.executable,
         shlex.quote(script),
-        "--pdf", shlex.quote(pdf_path),
         "--metadata", shlex.quote(metadata_path),
         "--output", shlex.quote(output_json),
     ]
+    if pdf_path:
+        args += ["--pdf", shlex.quote(pdf_path)]
     if api_key:
         args += ["--api-key", shlex.quote(api_key)]
     if flash:
@@ -52,7 +53,7 @@ def main() -> int:
 
     p_all = sub.add_parser("all", help="Run steps 1–2")
     p_all.add_argument("--sav", required=True)
-    p_all.add_argument("--pdf", required=True)
+    p_all.add_argument("--pdf", required=False, help="Optional questionnaire PDF")
     p_all.add_argument("--outdir", required=False, default=os.path.join(ROOT, "Output"))
     # removed indent control; scripts use fixed indentation
     p_all.add_argument("--api-key")
@@ -81,7 +82,7 @@ def main() -> int:
         print("[step] 2/2 Group with PDF+metadata…", flush=True)
         t0 = time.time()
         rc = step2_extract_llm_pdf(
-            args.pdf,
+            getattr(args, "pdf", None),
             meta_out,
             pdf_out,
             api_key=args.api_key,
