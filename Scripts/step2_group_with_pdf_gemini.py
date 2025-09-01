@@ -110,6 +110,60 @@ def main() -> None:
 
     client = genai.Client(api_key=api_key)
 
+    # JSON extraction helpers (used across shards and dedupe)
+    def extract_json_array_str(s: str) -> str:
+        start = s.find("[")
+        if start == -1:
+            raise ValueError("no '[' found")
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        raise ValueError("no matching ']' found")
+
+    def extract_code_fence(s: str) -> str:
+        tick = "```"
+        start = s.find(tick)
+        if start == -1:
+            return ""
+        lang_end = s.find("\n", start + len(tick))
+        if lang_end == -1:
+            return ""
+        end = s.find(tick, lang_end + 1)
+        if end == -1:
+            return ""
+        return s[lang_end + 1:end]
+
+    def extract_json_object_str(s: str) -> str:
+        start = s.find("{")
+        if start == -1:
+            raise ValueError("no '{' found")
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        raise ValueError("no matching '}' found")
+
+    def balance_brackets_fragment(fragment: str) -> str:
+        open_sq = fragment.count('[')
+        close_sq = fragment.count(']')
+        open_br = fragment.count('{')
+        close_br = fragment.count('}')
+        balanced = fragment
+        balanced += '}' * max(0, open_br - close_br)
+        balanced += ']' * max(0, open_sq - balanced.count(']'))
+        return balanced
+
     # Choose model and thinking budget
     model_name = args.model
     thinking_budget = 1024
@@ -367,8 +421,7 @@ def main() -> None:
     # Use merged groups (by header union) as candidates and let LLM refine.
     data = merged
 
-    # Optional: LLM-based deduplication/merging refinement
-    # Run LLM dedupe only when sharding was used
+    # Optional: LLM-based deduplication/merging refinement (groups only). Run only when sharding was used
     if len(overlapped_shards) > 1:
         try:
             print("[info] Running LLM deduplication refinement…")
@@ -405,12 +458,21 @@ def main() -> None:
                     sig = {"free_text": True}
                 code_to_sig[c] = sig
 
+            # Split data: groups vs non-groups (preserve standalone recodes/non-groups)
+            group_items: List[Dict[str, Any]] = []
+            non_group_items: List[Dict[str, Any]] = []
+            for it in data:
+                if isinstance(it, dict) and isinstance(it.get("sub_questions"), list):
+                    group_items.append(it)
+                else:
+                    non_group_items.append(it)
+
             # Summaries for candidate groups
             def header_base_val(h: str) -> str:
                 hb = h.replace("_GROUP", "").replace("_GRID", "")
                 return hb
             group_summaries: List[Dict[str, any]] = []
-            for it in data:
+            for it in group_items:
                 if not isinstance(it, dict):
                     continue
                 subs = it.get("sub_questions")
@@ -449,7 +511,7 @@ def main() -> None:
                     parts=[
                         Part.from_text(text=instr),
                         Part.from_text(text="ALLOWED_CODES:\n" + json.dumps(allowed_codes_sorted, ensure_ascii=False)),
-                        Part.from_text(text="CANDIDATE_GROUPS:\n" + json.dumps(data, ensure_ascii=False)),
+                        Part.from_text(text="CANDIDATE_GROUPS:\n" + json.dumps(group_items, ensure_ascii=False)),
                         Part.from_text(text="GROUP_SUMMARIES:\n" + json.dumps(group_summaries, ensure_ascii=False)),
                     ],
                 )
@@ -464,13 +526,17 @@ def main() -> None:
                 if isinstance(parsed, dict):
                     parsed = [parsed]
                 if isinstance(parsed, list):
-                    data = parsed
+                    # Keep only valid groups, and merge back preserved non-groups
+                    deduped_groups = [it for it in parsed if isinstance(it, dict) and isinstance(it.get("sub_questions"), list)]
+                    data = deduped_groups + non_group_items
                 else:
                     print("[warn] LLM dedupe returned non-list; keeping prior result.")
             except Exception:
                 try:
                     sn = extract_json_array_str(text_d)
-                    data = json.loads(sn)
+                    parsed = json.loads(sn)
+                    deduped_groups = [it for it in parsed if isinstance(it, dict) and isinstance(it.get("sub_questions"), list)]
+                    data = deduped_groups + non_group_items
                 except Exception:
                     try:
                         with open(args.output + ".dedupe.raw.txt", "w", encoding="utf-8") as rf:
@@ -480,6 +546,55 @@ def main() -> None:
                     print("[warn] LLM dedupe parse failed; keeping prior result.")
         except Exception as exc:
             print(f"[warn] LLM dedupe failed: {exc}")
+
+    # Heuristic subgroup splitting: break obvious sub-stems inside large groups
+    def split_parent_prefix_groups(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        splits = 0
+        for it in items:
+            if not isinstance(it, dict):
+                result.append(it)
+                continue
+            subs = it.get("sub_questions")
+            if not isinstance(subs, list) or len(subs) < 4:
+                result.append(it)
+                continue
+            # Map by parent prefix (strip last underscore segment)
+            buckets: Dict[str, List[Dict[str, Any]]] = {}
+            for sq in subs:
+                if not isinstance(sq, dict):
+                    continue
+                sc = str(sq.get("question_code", ""))
+                if not sc or "_" not in sc:
+                    buckets.setdefault("__misc__", []).append(sq)
+                    continue
+                parent = sc.rsplit("_", 1)[0]
+                buckets.setdefault(parent, []).append(sq)
+            # Identify meaningful buckets (size>=2)
+            big = {k: v for k, v in buckets.items() if len(v) >= 2}
+            # If multiple meaningful buckets exist and cover most subs, split
+            covered = sum(len(v) for v in big.values())
+            if len(big) >= 2 and covered >= max(4, int(0.7 * len(subs))):
+                for parent, members in big.items():
+                    new_it = dict(it)
+                    new_it["question_code"] = f"{parent}_GROUP"
+                    new_it["sub_questions"] = members
+                    result.append(new_it)
+                # keep leftover misc (if any) as its own small group only if >=2
+                misc = [sq for k, v in buckets.items() if k not in big for sq in v]
+                if len(misc) >= 2:
+                    new_misc = dict(it)
+                    new_misc["question_code"] = f"{str(it.get('question_code','GROUP'))}_MISC"
+                    new_misc["sub_questions"] = misc
+                    result.append(new_misc)
+                splits += 1
+            else:
+                result.append(it)
+        if splits:
+            print(f"[info] Performed subgroup splits: {splits}")
+        return result
+
+    data = split_parent_prefix_groups(data)
 
     # Safety: if sharding produced no groups, fall back to a single monolithic call
     def has_groups(items: List[Dict[str, Any]]) -> bool:
@@ -527,110 +642,7 @@ def main() -> None:
         except Exception as exc:
             print(f"[warn] Single-call fallback failed: {exc}")
 
-    # Extract JSON array safely (and helpers for robust recovery)
-    def extract_json_array_str(s: str) -> str:
-        start = s.find("[")
-        if start == -1:
-            raise ValueError("no '[' found")
-        depth = 0
-        for i in range(start, len(s)):
-            ch = s[i]
-            if ch == '[':
-                depth += 1
-            elif ch == ']':
-                depth -= 1
-                if depth == 0:
-                    return s[start:i+1]
-        raise ValueError("no matching ']' found")
-
-    def extract_code_fence(s: str) -> str:
-        tick = "```"
-        start = s.find(tick)
-        if start == -1:
-            return ""
-        # Skip optional language tag
-        lang_end = s.find("\n", start + len(tick))
-        if lang_end == -1:
-            return ""
-        end = s.find(tick, lang_end + 1)
-        if end == -1:
-            return ""
-        return s[lang_end + 1:end]
-
-    def extract_json_object_str(s: str) -> str:
-        start = s.find("{")
-        if start == -1:
-            raise ValueError("no '{' found")
-        depth = 0
-        for i in range(start, len(s)):
-            ch = s[i]
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    return s[start:i+1]
-        raise ValueError("no matching '}' found")
-
-    def balance_brackets_fragment(fragment: str) -> str:
-        # Best-effort: count brackets/braces and append closing ones
-        open_sq = fragment.count('[')
-        close_sq = fragment.count(']')
-        open_br = fragment.count('{')
-        close_br = fragment.count('}')
-        balanced = fragment
-        # Close braces first, then brackets
-        balanced += '}' * max(0, open_br - close_br)
-        balanced += ']' * max(0, open_sq - balanced.count(']'))
-        return balanced
-
-    try:
-        data = json.loads(text)
-        if not isinstance(data, list):
-            raise ValueError("not a list")
-    except Exception:
-        # Try code-fenced content first
-        cf = extract_code_fence(text)
-        if cf:
-            try:
-                data = json.loads(cf)
-                if isinstance(data, dict):
-                    data = [data]
-                if not isinstance(data, list):
-                    raise ValueError
-            except Exception:
-                pass
-        if 'data' not in locals():
-            try:
-                snippet = extract_json_array_str(text)
-                data = json.loads(snippet)
-                if not isinstance(data, list):
-                    raise ValueError
-            except Exception:
-                # Try object top-level → wrap in list
-                try:
-                    obj = extract_json_object_str(text)
-                    obj_json = json.loads(obj)
-                    data = [obj_json]
-                except Exception:
-                    # Try balancing missing closers on array fragment
-                    try:
-                        start_idx = text.find('[')
-                        if start_idx != -1:
-                            frag = balance_brackets_fragment(text[start_idx:])
-                            data = json.loads(frag)
-                            if not isinstance(data, list):
-                                raise ValueError
-                        else:
-                            raise ValueError("no '[' found")
-                    except Exception as exc2:
-                        try:
-                            with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
-                                rf.write(text)
-                        except Exception:
-                            pass
-                        print(f"[error] Failed to parse JSON array from model response: {exc2}")
-                        raise SystemExit(2)
+    # Remove legacy parse path for 'text' (sharded flow sets 'data' directly)
 
     # Warn if model returned no groups (or only standalones)
     def has_groups(items: List[Dict[str, Any]]) -> bool:
