@@ -7,6 +7,7 @@ import time
 import shutil
 import subprocess
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
 try:
@@ -51,11 +52,9 @@ def build_prompt() -> str:
         "- Group variables that repeat the same question across columns under a shared stem.\n"
         "- Accept a stem when at least two signals agree, or when a single source is clearly unambiguous:\n"
         "  • Common lead-in wording in PDF.  \n"
-        "  • Identical/highly similar possible_answers.  \n"
         "  • Sub-question texts may vary; if stems, code patterns, answer sets, or PDF layout clearly indicate the same repeated question, still group them.  \n"
         "  • Patterned codes (Q1_1..Q1_10, etc.).  \n"
         "  • Grid/column layout in PDF.  \n"
-        "  • Shared pa_type in metadata.  \n"
         "- If a large grid contains clear sub-groups, emit separate groups for each sub-stem; do not collapse distinct sub-groups into one.\n"
         "- Groups must have ≥2 members and be complete (include all matching members from metadata).\n"
         "- Do NOT group by section headings alone—only by true repeated-question stems.\n"
@@ -100,6 +99,7 @@ def main() -> None:
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--api-key", dest="api_key")
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
+    parser.add_argument("--llm-dedupe", action="store_true", help="Run an extra LLM pass to deduplicate/merge overlapping groups")
     # Flash toggle removed from UI; auto-select based on metadata size below
 
     args = parser.parse_args()
@@ -120,7 +120,7 @@ def main() -> None:
         full_meta: List[Dict[str, Any]] = json.load(f)
 
     # Build compact metadata payload: code + short text + small labels signal
-    def _shorten_text(t: Any, max_len: int = 160) -> str:
+    def _shorten_text(t: Any, max_len: int = 300) -> str:
         s = str(t) if t is not None else ""
         if len(s) > max_len:
             return s[:max_len - 1] + "…"
@@ -131,11 +131,11 @@ def main() -> None:
         if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"}:
             return {"range": True}
         if isinstance(pa, dict) and len(pa) > 0:
-            # Use first up to 5 label values
+            # Use first up to 8 label values
             sample_vals: List[str] = []
             try:
                 for i, (k, v) in enumerate(pa.items()):
-                    if i >= 5:
+                    if i >= 8:
                         break
                     sample_vals.append(str(v) if v is not None else "")
             except Exception:
@@ -204,18 +204,57 @@ def main() -> None:
             raise SystemExit("Timed out waiting for PDF to be ready.")
         time.sleep(1.0)
 
-    # Prepare request
+    # Prepare sharded requests (≈1000 variables per shard), keep families intact by base prefix
+    def compute_base(code: str) -> str:
+        if "_" in code:
+            parts = code.split("_")
+            if len(parts) > 1:
+                return "_".join(parts[:-1])
+        m = re.match(r"^(.*?)([A-Za-z]?\d{1,3})$", code)
+        return m.group(1) if m else code
+
+    base_to_items: Dict[str, List[Dict[str, Any]]] = {}
+    for item in compact_items:
+        c = str(item.get("question_code", ""))
+        b = compute_base(c) if c else ""
+        base_to_items.setdefault(b, []).append(item)
+
+    SHARD_TARGET = 1500
+    SHARD_OVERLAP = 120  # include ~120 vars from previous shard to avoid splitting families
+    shards: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    current_count = 0
+    for base, members in base_to_items.items():
+        if current_count + len(members) > SHARD_TARGET and current:
+            shards.append(current)
+            current = []
+            current_count = 0
+        current.extend(members)
+        current_count += len(members)
+    if current:
+        shards.append(current)
+
+    # Build overlapped shards to reduce boundary effects
+    overlapped_shards: List[List[Dict[str, Any]]] = []
+    for i, s in enumerate(shards):
+        if i == 0:
+            overlapped_shards.append(s)
+        else:
+            prev = shards[i-1]
+            overlap = prev[-SHARD_OVERLAP:] if len(prev) > SHARD_OVERLAP else prev[:]
+            overlapped_shards.append(overlap + s)
+    print(f"[info] Shards: {len(shards)} (sizes: {[len(s) for s in shards]}); with overlap sizes: {[len(s) for s in overlapped_shards]}")
+
+    # Build per-shard contents
     prompt = build_prompt()
-    contents = [
-        Content(
-            role="user",
-            parts=[
-                Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
-                Part.from_text(text=prompt),
-                Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
-            ],
-        )
-    ]
+    def build_contents_for(shard_items: List[Dict[str, Any]]):
+        shard_json = json.dumps(shard_items, ensure_ascii=False)
+        parts = [
+            Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
+            Part.from_text(text=prompt),
+            Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + shard_json),
+        ]
+        return [Content(role="user", parts=parts)]
 
     # Rough input token estimate (excludes PDF tokens). 1 token ≈ 4 bytes heuristic.
     try:
@@ -225,32 +264,268 @@ def main() -> None:
     except Exception:
         pass
 
+    # Use Flash for shards with moderate thinking budget
+    shard_model = "gemini-2.5-flash"
     generate_cfg = types.GenerateContentConfig(
-        temperature=temperature,
+        temperature=0.1,
         thinking_config=types.ThinkingConfig(
-            thinking_budget=thinking_budget,
+            thinking_budget=512,
             include_thoughts=False,
         ),
     )
-    def call_model(curr_model: str, cfg: "types.GenerateContentConfig") -> str:
+    def call_model(curr_model: str, cfg: "types.GenerateContentConfig", contents_param: List[Content]) -> str:
         resp = client.models.generate_content(
             model=curr_model,
-            contents=contents,
+            contents=contents_param,
             config=cfg,
         )
         return getattr(resp, "text", "") or "[]"
 
-    print(f"[info] Using model: {model_name}")
-    text = call_model(model_name, generate_cfg)
-    if not isinstance(text, str) or not text.strip():
-        # Write raw empty output marker and exit
+    print(f"[info] Using model (sharded): {shard_model}")
+    shard_results: List[List[Dict[str, Any]]] = [None] * len(overlapped_shards)  # type: ignore[list-item]
+
+    def process_shard(idx: int, shard_items: List[Dict[str, Any]]) -> None:
+        print(f"[info] Shard {idx+1}/{len(overlapped_shards)} size={len(shard_items)}")
+        local_contents = build_contents_for(shard_items)
+        text = call_model(shard_model, generate_cfg, local_contents)
+        if not isinstance(text, str) or not text.strip():
+            try:
+                with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
+                    rf.write("(empty response)\n")
+            except Exception:
+                pass
+            print(f"[warn] Shard {idx+1} returned empty response; skipping.")
+            shard_results[idx] = []
+            return
+        # Parse per shard into list
+        def parse_text_to_list(s: str) -> List[Dict[str, Any]]:
+            try:
+                d = json.loads(s)
+                return d if isinstance(d, list) else ([d] if isinstance(d, dict) else [])
+            except Exception:
+                try:
+                    snip = extract_json_array_str(s)
+                    d = json.loads(snip)
+                    return d if isinstance(d, list) else []
+                except Exception:
+                    try:
+                        obj = extract_json_object_str(s)
+                        d = json.loads(obj)
+                        return [d]
+                    except Exception:
+                        try:
+                            with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
+                                rf.write(s)
+                        except Exception:
+                            pass
+                        return []
+        shard_results[idx] = parse_text_to_list(text)
+
+    max_workers = min(8, len(overlapped_shards)) if len(overlapped_shards) > 0 else 0
+    if max_workers > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_shard, i, overlapped_shards[i]) for i in range(len(overlapped_shards))]
+            for _ in as_completed(futures):
+                pass
+    else:
+        for i, s in enumerate(overlapped_shards):
+            process_shard(i, s)
+
+    # Merge shard results
+    merged: List[Dict[str, Any]] = []
+    # Merge by group header code; if same header appears, merge sub_questions, prefer larger
+    header_to_group: Dict[str, Dict[str, Any]] = {}
+    for lst in shard_results:
+        for it in lst:
+            if not isinstance(it, dict):
+                continue
+            subs = it.get("sub_questions")
+            if isinstance(subs, list):
+                h = str(it.get("question_code", "")) or f"GROUP_{len(header_to_group)}"
+                if h in header_to_group:
+                    existing = header_to_group[h]
+                    exist_codes = {str(sq.get("question_code")) for sq in existing.get("sub_questions", []) if isinstance(sq, dict)}
+                    new_subs: List[Dict[str, Any]] = []
+                    new_subs.extend(existing.get("sub_questions", []))
+                    for sq in subs:
+                        sc = str((sq or {}).get("question_code", ""))
+                        if sc and sc not in exist_codes:
+                            new_subs.append(sq)
+                    existing["sub_questions"] = new_subs
+                else:
+                    header_to_group[h] = it
+            else:
+                merged.append(it)
+    merged.extend(header_to_group.values())
+    # Prefer groups with more members when duplicates slipped through
+    def sort_key(it: Dict[str, Any]) -> int:
+        subs = it.get("sub_questions")
+        return len(subs) if isinstance(subs, list) else 0
+    merged.sort(key=sort_key, reverse=True)
+
+    # Simplified: trust LLM dedupe to decide final unique assignment.
+    # Use merged groups (by header union) as candidates and let LLM refine.
+    data = merged
+
+    # Optional: LLM-based deduplication/merging refinement
+    # Run LLM dedupe only when sharding was used
+    if len(overlapped_shards) > 1:
         try:
-            with open(args.output + ".raw.txt", "w", encoding="utf-8") as rf:
-                rf.write("(empty response)\n")
-        except Exception:
-            pass
-        print("[error] Model returned empty response.")
-        raise SystemExit(2)
+            print("[info] Running LLM deduplication refinement…")
+            dedupe_model = "gemini-2.5-pro"
+            dedupe_cfg = types.GenerateContentConfig(
+                temperature=0.0,
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=512,
+                    include_thoughts=False,
+                ),
+            )
+            allowed_codes_sorted = []
+            try:
+                allowed_codes_sorted = sorted({str(q.get("question_code", "")) for q in full_meta if str(q.get("question_code", ""))})
+            except Exception:
+                pass
+            # Build compact metadata signals per code to help dedupe
+            code_to_sig: Dict[str, Dict[str, any]] = {}
+            for q in full_meta:
+                c = str(q.get("question_code", ""))
+                if not c:
+                    continue
+                pa = q.get("possible_answers")
+                if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"}:
+                    sig = {"range": True}
+                elif isinstance(pa, dict) and len(pa) > 0:
+                    sample_vals: List[str] = []
+                    for i, (k, v) in enumerate(pa.items()):
+                        if i >= 5:
+                            break
+                        sample_vals.append(str(v) if v is not None else "")
+                    sig = {"labels_size": len(pa), "labels_sample": sample_vals}
+                else:
+                    sig = {"free_text": True}
+                code_to_sig[c] = sig
+
+            # Summaries for candidate groups
+            def header_base_val(h: str) -> str:
+                hb = h.replace("_GROUP", "").replace("_GRID", "")
+                return hb
+            group_summaries: List[Dict[str, any]] = []
+            for it in data:
+                if not isinstance(it, dict):
+                    continue
+                subs = it.get("sub_questions")
+                if not isinstance(subs, list):
+                    continue
+                h = str(it.get("question_code", "GROUP"))
+                hb = header_base_val(h)
+                qtext = str(it.get("question_text", h))
+                sub_codes = [str((sq or {}).get("question_code", "")) for sq in subs if isinstance(sq, dict) and sq.get("question_code")]
+                # attach a few code signals
+                sigs = {c: code_to_sig.get(c, {}) for c in sub_codes[:10]}
+                group_summaries.append({
+                    "header": h,
+                    "header_base": hb,
+                    "size": len(subs),
+                    "question_text": qtext,
+                    "sample_subs": sub_codes[:15],
+                    "sample_signals": sigs,
+                })
+
+            instr = (
+                "You are given ALLOWED_CODES, CANDIDATE_GROUPS (JSON array), and GROUP_SUMMARIES.\n"
+                "Goal: deduplicate and MERGE overlapping or duplicate multi-select groups, especially duplicates created by sharding.\n"
+                "Rules:\n"
+                "- Each sub-question code appears in at most one group.\n"
+                "- Merge groups that clearly refer to the same stem (identical or highly similar header_base/question_text), or whose sub codes share the same base/prefix and answer structure.\n"
+                "- If a sub fits multiple groups, assign to the group whose header best matches the sub code prefix/stem.\n"
+                "- Prefer the more specific header when merging; do not invent new headers.\n"
+                "- Keep only codes present in ALLOWED_CODES.\n"
+                "- Do NOT over-merge unrelated stems; rely on header_base similarity and sample_signals.\n"
+                "- Output ONLY the final JSON array using the same schema as input.\n"
+            )
+            dedupe_contents = [
+                Content(
+                    role="user",
+                    parts=[
+                        Part.from_text(text=instr),
+                        Part.from_text(text="ALLOWED_CODES:\n" + json.dumps(allowed_codes_sorted, ensure_ascii=False)),
+                        Part.from_text(text="CANDIDATE_GROUPS:\n" + json.dumps(data, ensure_ascii=False)),
+                        Part.from_text(text="GROUP_SUMMARIES:\n" + json.dumps(group_summaries, ensure_ascii=False)),
+                    ],
+                )
+            ]
+            text_d = client.models.generate_content(
+                model=dedupe_model,
+                contents=dedupe_contents,
+                config=dedupe_cfg,
+            ).text or "[]"
+            try:
+                parsed = json.loads(text_d)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                if isinstance(parsed, list):
+                    data = parsed
+                else:
+                    print("[warn] LLM dedupe returned non-list; keeping prior result.")
+            except Exception:
+                try:
+                    sn = extract_json_array_str(text_d)
+                    data = json.loads(sn)
+                except Exception:
+                    try:
+                        with open(args.output + ".dedupe.raw.txt", "w", encoding="utf-8") as rf:
+                            rf.write(text_d)
+                    except Exception:
+                        pass
+                    print("[warn] LLM dedupe parse failed; keeping prior result.")
+        except Exception as exc:
+            print(f"[warn] LLM dedupe failed: {exc}")
+
+    # Safety: if sharding produced no groups, fall back to a single monolithic call
+    def has_groups(items: List[Dict[str, Any]]) -> bool:
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("sub_questions"), list) and len(it.get("sub_questions")) >= 2:
+                return True
+        return False
+
+    if not has_groups(data):
+        print("[warn] Sharded run produced no groups; attempting single-call fallback (pro)…")
+        mono_model = "gemini-2.5-pro"
+        mono_cfg = types.GenerateContentConfig(
+            temperature=0.0,
+            thinking_config=types.ThinkingConfig(
+                thinking_budget=1536,
+                include_thoughts=False,
+            ),
+        )
+        # Build monolithic contents
+        full_parts = [
+            Part.from_uri(file_uri=file_obj.uri, mime_type="application/pdf"),
+            Part.from_text(text=build_prompt()),
+            Part.from_text(text="SPSS_METADATA_COMPACT_JSON:\n" + compact_json),
+        ]
+        full_contents = [Content(role="user", parts=full_parts)]
+        try:
+            txt = client.models.generate_content(model=mono_model, contents=full_contents, config=mono_cfg).text or "[]"
+            try:
+                parsed = json.loads(txt)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                if isinstance(parsed, list):
+                    data = parsed
+            except Exception:
+                try:
+                    sn = extract_json_array_str(txt)
+                    data = json.loads(sn)
+                except Exception:
+                    try:
+                        with open(args.output + ".mono.raw.txt", "w", encoding="utf-8") as rf:
+                            rf.write(txt)
+                    except Exception:
+                        pass
+                    data = []
+        except Exception as exc:
+            print(f"[warn] Single-call fallback failed: {exc}")
 
     # Extract JSON array safely (and helpers for robust recovery)
     def extract_json_array_str(s: str) -> str:
@@ -376,93 +651,36 @@ def main() -> None:
         return n
 
     if not has_groups(data):
-        # Retry once with alternate model/settings
-        try:
-            alt_model = "gemini-2.5-pro" if model_name == "gemini-2.5-flash" else "gemini-2.5-flash"
-            alt_cfg = types.GenerateContentConfig(
-                temperature=0.0,
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=1024,
-                    include_thoughts=False,
-                ),
-            )
-            print(f"[warn] No groups found; retrying with {alt_model}…")
-            text2 = call_model(alt_model, alt_cfg)
-            if not isinstance(text2, str) or not text2.strip():
-                data2 = []
-            else:
-                try:
-                    data2 = json.loads(text2)
-                    if not isinstance(data2, list):
-                        raise ValueError
-                except Exception:
-                    try:
-                        snippet2 = extract_json_array_str(text2)
-                        data2 = json.loads(snippet2)
-                        if not isinstance(data2, list):
-                            data2 = []
-                    except Exception:
-                        # persist raw retry output
-                        try:
-                            with open(args.output + ".retry.raw.txt", "w", encoding="utf-8") as rf:
-                                rf.write(text2)
-                        except Exception:
-                            pass
-                        data2 = []
-            if has_groups(data2):
-                data = data2
-            else:
-                if getattr(args, "fallback", False):
-                    print("[warn] No groups after retry; using heuristic fallback grouping.")
-                    # Heuristic fallback grouping by base prefix
-                    def compute_base(code: str) -> str:
-                        if "_" in code:
-                            parts = code.split("_")
-                            if len(parts) > 1:
-                                return "_".join(parts[:-1])
-                        m = re.match(r"^(.*?)([A-Za-z]?\d{1,3})$", code)
-                        return m.group(1) if m else code
-                    base_to_members: Dict[str, List[Dict[str, Any]]] = {}
-                    for q in full_meta:
-                        c = str(q.get("question_code", ""))
-                        if not c:
-                            continue
-                        b = compute_base(c)
-                        base_to_members.setdefault(b, []).append(q)
-                    grouped_items: List[Dict[str, Any]] = []
-                    for base, members in base_to_members.items():
-                        if len(members) >= 2:
-                            grouped_items.append({
-                                "question_code": f"{base}_GROUP",
-                                "question_text": base,
-                                "question_type": "multi-select",
-                                "sub_questions": [
-                                    {"question_code": m.get("question_code"), "possible_answers": m.get("possible_answers", {})}
-                                    for m in members
-                                ],
-                            })
-                    member_codes = {m.get("question_code") for members in base_to_members.values() if len(members) >= 2 for m in members}
-                    for q in full_meta:
-                        c = q.get("question_code")
-                        if c in member_codes:
-                            continue
-                        pa = q.get("possible_answers")
-                        qtype = "integer" if isinstance(pa, dict) and set(pa.keys()) == {"min", "max"} else "single-select"
-                        grouped_items.append({
-                            "question_code": c,
-                            "question_text": q.get("question_text"),
-                            "question_type": qtype,
-                            "possible_answers": pa,
-                        })
-                    data = grouped_items
-                else:
-                    print("[error] Grouping produced no groups after retry. Aborting.")
-                    raise SystemExit(2)
-        except SystemExit:
-            raise
-        except Exception as exc:
-            print(f"[error] Retry failed: {exc}")
-            raise SystemExit(2)
+        # Final safety net: always produce a heuristic grouping rather than aborting
+        print("[warn] No groups found; emitting heuristic prefix-based groups as fallback.")
+        def compute_base(code: str) -> str:
+            if "_" in code:
+                parts = code.split("_")
+                if len(parts) > 1:
+                    return "_".join(parts[:-1])
+            m = re.match(r"^(.*?)([A-Za-z]?\d{1,3})$", code)
+            return m.group(1) if m else code
+        base_to_members: Dict[str, List[Dict[str, Any]]] = {}
+        for q in full_meta:
+            c = str(q.get("question_code", ""))
+            if not c:
+                continue
+            b = compute_base(c)
+            base_to_members.setdefault(b, []).append(q)
+        grouped_items: List[Dict[str, Any]] = []
+        for base, members in base_to_members.items():
+            if len(members) >= 2:
+                grouped_items.append({
+                    "question_code": f"{base}_GROUP",
+                    "question_text": base,
+                    "question_type": "multi-select",
+                    "sub_questions": [
+                        {"question_code": m.get("question_code"), "possible_answers": m.get("possible_answers", {})}
+                        for m in members
+                    ],
+                })
+        # Keep recodes/standalones with recode_from if any existed in 'data' (none here), otherwise drop
+        data = grouped_items
 
     print(f"[debug] Groups returned by model (pre-validation): {count_groups(data)}")
     with open(args.output, "w", encoding="utf-8") as f:
@@ -486,6 +704,25 @@ def main() -> None:
                 gh = str(it.get("question_code", ""))
                 if gh:
                     group_header_codes.add(gh)
+
+        # Enforce: each sub-question may appear in at most ONE multi-select group
+        sub_to_groups: Dict[str, List[str]] = {}
+        for it in data:
+            if isinstance(it, dict) and isinstance(it.get("sub_questions"), list):
+                grp_code_hdr = str(it.get("question_code", "GROUP"))
+                for sq in it.get("sub_questions", []):
+                    if not isinstance(sq, dict):
+                        continue
+                    sc = str(sq.get("question_code", ""))
+                    if sc:
+                        sub_to_groups.setdefault(sc, []).append(grp_code_hdr)
+        dup_subs = {c: gs for c, gs in sub_to_groups.items() if len(gs) > 1}
+        if dup_subs:
+            print("[error] Sub-questions assigned to multiple groups:")
+            for c, gs in list(dup_subs.items())[:50]:
+                print(f"  - {c}: groups={gs}")
+            print("[fail] A sub-question must appear in at most one multi-select group.")
+            raise SystemExit(3)
 
         for it in data:
             if not isinstance(it, dict):
