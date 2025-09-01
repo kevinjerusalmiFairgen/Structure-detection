@@ -52,6 +52,7 @@ def build_prompt() -> str:
         "- Accept a stem when at least two signals agree, or when a single source is clearly unambiguous:\n"
         "  • Common lead-in wording in PDF.  \n"
         "  • Identical/highly similar possible_answers.  \n"
+        "  • Sub-question texts may vary; if stems, code patterns, answer sets, or PDF layout clearly indicate the same repeated question, still group them.  \n"
         "  • Patterned codes (Q1_1..Q1_10, etc.).  \n"
         "  • Grid/column layout in PDF.  \n"
         "  • Shared pa_type in metadata.  \n"
