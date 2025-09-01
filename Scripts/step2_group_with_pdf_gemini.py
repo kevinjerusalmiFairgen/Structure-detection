@@ -99,7 +99,7 @@ def main() -> None:
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--api-key", dest="api_key")
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
-    parser.add_argument("--flash", action="store_true", help="Use Gemini 2.5 Flash with higher thinking budget (4096)")
+    # Flash toggle removed from UI; auto-select based on metadata size below
 
     args = parser.parse_args()
 
@@ -113,10 +113,6 @@ def main() -> None:
     model_name = args.model
     thinking_budget = 1024
     temperature = 0.0
-    if args.flash:
-        model_name = "gemini-2.5-flash"
-        thinking_budget = 256
-        temperature = 0.1
 
     # Load metadata and compact
     with open(args.metadata, "r", encoding="utf-8") as f:
@@ -164,11 +160,15 @@ def main() -> None:
         too_big = (meta_vars >= 1500) or (compact_bytes >= 1_500_000)
     except Exception:
         too_big = False
-    if ("flash" in str(locals().get("model_name", ""))) and too_big:
-        print(f"[info] Metadata is large (vars={meta_vars}, size={compact_bytes} bytes). Switching to gemini-2.5-pro.")
+    # Auto-select model: default to Flash for speed, switch to Pro if metadata is large
+    if too_big:
         model_name = "gemini-2.5-pro"
         thinking_budget = 1024
         temperature = 0.0
+    else:
+        model_name = "gemini-2.5-flash"
+        thinking_budget = 256
+        temperature = 0.1
 
     # Increase thinking budget when input is complex (more variables / larger payload)
     try:

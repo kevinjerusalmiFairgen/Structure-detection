@@ -9,3 +9,6 @@ __pycache__/
 
 # Streamlit secrets
 .streamlit/
+
+# Local env for secrets
+.envrc

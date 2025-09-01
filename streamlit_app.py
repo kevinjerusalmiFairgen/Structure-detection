@@ -33,13 +33,10 @@ def main() -> None:
     st.set_page_config(page_title="Questionnaire Grouper", page_icon="📊", layout="wide")
 
     st.title("📊 Questionnaire Grouper")
-    st.caption("Upload an SPSS .sav and the questionnaire PDF. The app extracts metadata and groups questions (multi-select), optionally using Gemini 2.5 Flash.")
+    st.caption("Upload an SPSS .sav and the questionnaire PDF. The app extracts metadata and groups questions (multi-select), automatically selecting the best Gemini model.")
 
     with st.sidebar:
-        st.header("Settings")
-        use_flash = st.toggle("Use Gemini 2.5 Flash (faster)", value=False)
-        # Fixed JSON indentation in scripts; no user control
-        show_tb = st.toggle("Show Python traceback on error", value=True)
+        st.header("Run")
         # Read Gemini key from Streamlit secrets or env; no manual entry in UI
         secret_key = ""
         try:
@@ -104,8 +101,7 @@ def main() -> None:
                     st.code("CMD: " + " ".join(step1_cmd))
                 else:
                     st.code(logs1)
-            if show_tb and logs1.strip() == "":
-                st.exception(RuntimeError("Step 1 failed"))
+            st.exception(RuntimeError("Step 1 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
             return
         status.write(f"[time] 1/2 Extract metadata: {t1:.1f}s")
@@ -118,10 +114,6 @@ def main() -> None:
             "--metadata", meta_out,
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
         ]
-        if use_flash:
-            step2_cmd.append("--flash")
-        else:
-            step2_cmd += ["--model", "gemini-2.5-pro"]
         effective_api_key = (secret_key or os.environ.get("GOOGLE_API_KEY", "")).strip()
         if effective_api_key:
             os.environ["GOOGLE_API_KEY"] = effective_api_key
@@ -191,19 +183,18 @@ def main() -> None:
                     st.code("CMD: " + " ".join(step2_cmd))
                 else:
                     st.code(combined)
-            if show_tb and (logs2.strip() == ""):
-                st.exception(RuntimeError("Step 2 failed"))
+            st.exception(RuntimeError("Step 2 failed"))
             shutil.rmtree(workdir, ignore_errors=True)
             return
         # Parse model used from step2 logs (accounts for auto-switching to Pro in script)
         try:
             import re as _re
             m_used = _re.search(r"\[info\] Using model:\s*([^\r\n]+)", logs2 or "")
-            model_used = (m_used.group(1).strip() if m_used else ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro"))
+            model_used = (m_used.group(1).strip() if m_used else "(unknown)")
             m_tokens = _re.search(r"\[info\] Estimated tokens:\s*(\d+)", logs2 or "")
             tokens_str = f", tokens: {m_tokens.group(1)}" if (model_used.startswith("gemini-2.5-pro") and m_tokens) else ""
         except Exception:
-            model_used = ("gemini-2.5-flash" if use_flash else "gemini-2.5-pro")
+            model_used = "(unknown)"
             tokens_str = ""
         status.write(f"[time] 2/2 Group with PDF+metadata: {t2:.1f}s (model: {model_used}{tokens_str})")
 
@@ -271,8 +262,7 @@ def main() -> None:
                 groups_obj = json.load(f)
         except Exception as e:
             st.error("Failed to parse groups JSON.")
-            if show_tb:
-                st.exception(e)
+            st.exception(e)
             with st.expander("Logs", expanded=False):
                 st.code(logs1 + "\n" + logs2 + "\n" + logs3)
             shutil.rmtree(workdir, ignore_errors=True)
