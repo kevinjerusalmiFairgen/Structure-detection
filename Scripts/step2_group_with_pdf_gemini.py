@@ -695,6 +695,12 @@ def main() -> None:
         data = grouped_items
 
     print(f"[debug] Groups returned by model (pre-validation): {count_groups(data)}")
+    # Ensure output directory exists
+    try:
+        outdir = os.path.dirname(args.output) or "."
+        os.makedirs(outdir, exist_ok=True)
+    except Exception:
+        pass
     with open(args.output, "w", encoding="utf-8") as f:
         # Post-process: STRICT validation only. Do not auto-add or augment.
         # Build metadata code set
