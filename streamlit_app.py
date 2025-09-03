@@ -114,6 +114,8 @@ def main() -> None:
             "--metadata", meta_out,
             "--output", os.path.join(outdir, "step2_grouped_questions.json"),
         ]
+        # Heuristic fallback off by default; toggle here if needed
+        # step2_cmd.append("--fallback")
         effective_api_key = (secret_key or os.environ.get("GOOGLE_API_KEY", "")).strip()
         if effective_api_key:
             os.environ["GOOGLE_API_KEY"] = effective_api_key
@@ -308,7 +310,7 @@ def main() -> None:
                 st.write(f"Shard sizes: [{shards_sizes}]")
                 st.write(f"Overlap sizes: [{shards_ovlp}]")
             st.write(f"LLM dedupe: {'Yes' if dedupe_used else 'No'}")
-            st.write(f"Heuristic fallback used: {'Yes' if fallback_used else 'No'}")
+            st.write(f"Heuristic fallback used: {'Yes' if fallback_used else 'No'} (off by default)")
             if groups_pre is not None:
                 st.write(f"Groups pre-validation: {groups_pre}")
             if groups_post is not None:

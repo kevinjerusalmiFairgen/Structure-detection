@@ -4,9 +4,8 @@ import json
 import os
 import sys
 import time
-import shutil
-import subprocess
 from typing import Any, Dict, List
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
@@ -18,6 +17,13 @@ except Exception as exc:
     raise SystemExit(
         "google-genai is required. Install with: pip install google-genai"
     ) from exc
+
+# Suppress pydantic Operation field shadowing warnings from google-genai
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module=r"pydantic\._internal\._fields",
+)
 
 
 def build_prompt() -> str:
@@ -98,8 +104,8 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="Path to write the combined grouped JSON")
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--api-key", dest="api_key")
+    # LLM dedupe is automatic when sharded; optional heuristic fallback via flag
     parser.add_argument("--fallback", action="store_true", help="If no groups from API, emit heuristic prefix-based groups instead of failing")
-    parser.add_argument("--llm-dedupe", action="store_true", help="Run an extra LLM pass to deduplicate/merge overlapping groups")
     # Flash toggle removed from UI; auto-select based on metadata size below
 
     args = parser.parse_args()
@@ -339,41 +345,55 @@ def main() -> None:
     shard_results: List[List[Dict[str, Any]]] = [None] * len(overlapped_shards)  # type: ignore[list-item]
 
     def process_shard(idx: int, shard_items: List[Dict[str, Any]]) -> None:
-        print(f"[info] Shard {idx+1}/{len(overlapped_shards)} size={len(shard_items)}")
-        local_contents = build_contents_for(shard_items)
-        text = call_model(shard_model, generate_cfg, local_contents)
-        if not isinstance(text, str) or not text.strip():
-            try:
-                with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
-                    rf.write("(empty response)\n")
-            except Exception:
-                pass
-            print(f"[warn] Shard {idx+1} returned empty response; skipping.")
-            shard_results[idx] = []
-            return
-        # Parse per shard into list
-        def parse_text_to_list(s: str) -> List[Dict[str, Any]]:
-            try:
-                d = json.loads(s)
-                return d if isinstance(d, list) else ([d] if isinstance(d, dict) else [])
-            except Exception:
+        try:
+            print(f"[info] Shard {idx+1}/{len(overlapped_shards)} size={len(shard_items)}")
+            local_contents = build_contents_for(shard_items)
+            text = ""
+            # Lightweight network retry (not semantic retry policy)
+            for attempt in range(3):
                 try:
-                    snip = extract_json_array_str(s)
-                    d = json.loads(snip)
-                    return d if isinstance(d, list) else []
+                    text = call_model(shard_model, generate_cfg, local_contents)
+                    if isinstance(text, str) and text.strip():
+                        break
+                except Exception as _exc:
+                    if attempt == 2:
+                        raise
+                time.sleep(0.8)
+            if not isinstance(text, str) or not text.strip():
+                try:
+                    with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
+                        rf.write("(empty response)\n")
+                except Exception:
+                    pass
+                print(f"[warn] Shard {idx+1} returned empty response after retries; skipping.")
+                shard_results[idx] = []
+                return
+            # Parse per shard into list
+            def parse_text_to_list(s: str) -> List[Dict[str, Any]]:
+                try:
+                    d = json.loads(s)
+                    return d if isinstance(d, list) else ([d] if isinstance(d, dict) else [])
                 except Exception:
                     try:
-                        obj = extract_json_object_str(s)
-                        d = json.loads(obj)
-                        return [d]
+                        snip = extract_json_array_str(s)
+                        d = json.loads(snip)
+                        return d if isinstance(d, list) else []
                     except Exception:
                         try:
-                            with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
-                                rf.write(s)
+                            obj = extract_json_object_str(s)
+                            d = json.loads(obj)
+                            return [d]
                         except Exception:
-                            pass
-                        return []
-        shard_results[idx] = parse_text_to_list(text)
+                            try:
+                                with open(args.output + f".shard{idx+1}.raw.txt", "w", encoding="utf-8") as rf:
+                                    rf.write(s)
+                            except Exception:
+                                pass
+                            return []
+            shard_results[idx] = parse_text_to_list(text)
+        except Exception as exc:
+            print(f"[warn] Shard {idx+1} failed: {exc}")
+            shard_results[idx] = []
 
     max_workers = min(8, len(overlapped_shards)) if len(overlapped_shards) > 0 else 0
     if max_workers > 1:
@@ -385,11 +405,13 @@ def main() -> None:
         for i, s in enumerate(overlapped_shards):
             process_shard(i, s)
 
-    # Merge shard results
+    # Merge shard results (sanitize None)
     merged: List[Dict[str, Any]] = []
     # Merge by group header code; if same header appears, merge sub_questions, prefer larger
     header_to_group: Dict[str, Dict[str, Any]] = {}
     for lst in shard_results:
+        if not isinstance(lst, list):
+            lst = []
         for it in lst:
             if not isinstance(it, dict):
                 continue
@@ -547,54 +569,7 @@ def main() -> None:
         except Exception as exc:
             print(f"[warn] LLM dedupe failed: {exc}")
 
-    # Heuristic subgroup splitting: break obvious sub-stems inside large groups
-    def split_parent_prefix_groups(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-        splits = 0
-        for it in items:
-            if not isinstance(it, dict):
-                result.append(it)
-                continue
-            subs = it.get("sub_questions")
-            if not isinstance(subs, list) or len(subs) < 4:
-                result.append(it)
-                continue
-            # Map by parent prefix (strip last underscore segment)
-            buckets: Dict[str, List[Dict[str, Any]]] = {}
-            for sq in subs:
-                if not isinstance(sq, dict):
-                    continue
-                sc = str(sq.get("question_code", ""))
-                if not sc or "_" not in sc:
-                    buckets.setdefault("__misc__", []).append(sq)
-                    continue
-                parent = sc.rsplit("_", 1)[0]
-                buckets.setdefault(parent, []).append(sq)
-            # Identify meaningful buckets (size>=2)
-            big = {k: v for k, v in buckets.items() if len(v) >= 2}
-            # If multiple meaningful buckets exist and cover most subs, split
-            covered = sum(len(v) for v in big.values())
-            if len(big) >= 2 and covered >= max(4, int(0.7 * len(subs))):
-                for parent, members in big.items():
-                    new_it = dict(it)
-                    new_it["question_code"] = f"{parent}_GROUP"
-                    new_it["sub_questions"] = members
-                    result.append(new_it)
-                # keep leftover misc (if any) as its own small group only if >=2
-                misc = [sq for k, v in buckets.items() if k not in big for sq in v]
-                if len(misc) >= 2:
-                    new_misc = dict(it)
-                    new_misc["question_code"] = f"{str(it.get('question_code','GROUP'))}_MISC"
-                    new_misc["sub_questions"] = misc
-                    result.append(new_misc)
-                splits += 1
-            else:
-                result.append(it)
-        if splits:
-            print(f"[info] Performed subgroup splits: {splits}")
-        return result
-
-    data = split_parent_prefix_groups(data)
+    # Note: All group merge/split decisions are handled by LLM; no heuristic subgroup splitting.
 
     # Safety: if sharding produced no groups, fall back to a single monolithic call
     def has_groups(items: List[Dict[str, Any]]) -> bool:
@@ -644,27 +619,9 @@ def main() -> None:
 
     # Remove legacy parse path for 'text' (sharded flow sets 'data' directly)
 
-    # Warn if model returned no groups (or only standalones)
-    def has_groups(items: List[Dict[str, Any]]) -> bool:
-        for it in items:
-            if isinstance(it, dict):
-                subs = it.get("sub_questions")
-                if isinstance(subs, list) and len(subs) >= 2:
-                    return True
-        return False
-
-    def count_groups(items: List[Dict[str, Any]]) -> int:
-        n = 0
-        for it in items:
-            if isinstance(it, dict):
-                subs = it.get("sub_questions")
-                if isinstance(subs, list) and len(subs) >= 2:
-                    n += 1
-        return n
-
-    if not has_groups(data):
-        # Final safety net: always produce a heuristic grouping rather than aborting
-        print("[warn] No groups found; emitting heuristic prefix-based groups as fallback.")
+    if not has_groups(data) and getattr(args, "fallback", False):
+        # Optional heuristic fallback
+        print("[warn] No groups found; --fallback enabled → emitting heuristic prefix-based groups.")
         def compute_base(code: str) -> str:
             if "_" in code:
                 parts = code.split("_")
@@ -693,6 +650,18 @@ def main() -> None:
                 })
         # Keep recodes/standalones with recode_from if any existed in 'data' (none here), otherwise drop
         data = grouped_items
+
+    # Helpers (defined here to ensure availability regardless of earlier refactors)
+    def count_groups(items: List[Dict[str, Any]]) -> int:
+        n = 0
+        for it in items:
+            if isinstance(it, dict):
+                subs = it.get("sub_questions")
+                if isinstance(subs, list) and len(subs) >= 2:
+                    n += 1
+        return n
+    def has_groups(items: List[Dict[str, Any]]) -> bool:
+        return count_groups(items) > 0
 
     print(f"[debug] Groups returned by model (pre-validation): {count_groups(data)}")
     # Ensure output directory exists
